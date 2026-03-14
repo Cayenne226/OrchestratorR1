@@ -1,0 +1,40 @@
+# Models and checkpoints
+models/
+checkpoints/
+*.safetensors
+*.bin
+*.pt
+
+# Data (large files)
+data/*.jsonl
+data/*.parquet
+
+# Evaluation results
+eval/results/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+*.egg-info/
+dist/
+build/
+
+# Environment
+.env
+*.env
+venv/
+.venv/
+
+# Experiment tracking
+wandb/
+runs/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
