@@ -190,7 +190,8 @@ def main():
         dataloader_num_workers=2,
         logging_steps=10,
         save_steps=100,
-        save_total_limit=3,
+        save_total_limit=2,
+        save_only_model=True,          # skip optimizer states (~28GB saved per checkpoint)
         report_to="wandb",
         run_name=f"orchestrator-r1-alpha{args.alpha}-beta{args.beta}",
         warmup_ratio=0.05,
