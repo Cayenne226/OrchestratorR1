@@ -16,13 +16,13 @@ for arg in "$@"; do
 done
 
 if [ "$A800_MODE" = true ]; then
-    echo "=== A800 Mode: 2x A800 80GB, FSDP, 7B full fine-tuning ==="
+    echo "=== A800 Mode: 2x A800 80GB, FSDP, 3B full fine-tuning ==="
     export CUDA_VISIBLE_DEVICES=0,1
     export NCCL_DEBUG=WARNING
     export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
     ACCEL_CONFIG="training/accelerate_fsdp_2gpu.yaml"
-    MODEL_PATH=${MODEL_PATH:-"models/Qwen2.5-7B-Instruct"}
-    BATCH_SIZE=1
+    MODEL_PATH=${MODEL_PATH:-"models/Qwen2.5-3B-Instruct"}
+    BATCH_SIZE=4
     LORA_FLAG=""
 
 elif [ "$WINDOWS_MODE" = true ]; then
