@@ -90,7 +90,10 @@ def load_source(name: str, split: str, max_samples: int) -> list[dict]:
 
     records = []
     for ex in ds:
-        question = ex.get(cfg["question_key"], "").strip()
+        question = ex.get(cfg["question_key"], "")
+        if isinstance(question, dict):
+            question = question.get("text", "")
+        question = str(question).strip()
         if not question:
             continue
         try:
