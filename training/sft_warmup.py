@@ -41,7 +41,7 @@ def parse_args():
     parser.add_argument("--grad_accum",  type=int, default=4)
     parser.add_argument("--learning_rate", type=float, default=2e-5)
     parser.add_argument("--num_epochs",  type=int, default=3)
-    parser.add_argument("--max_seq_length", type=int, default=2048)
+    parser.add_argument("--max_seq_length", type=int, default=512)
     parser.add_argument("--use_lora",      action="store_true",
                         help="Use LoRA (required for DDP on Windows)")
     parser.add_argument("--lora_r",        type=int, default=64)
@@ -116,8 +116,10 @@ def main():
         gradient_accumulation_steps=args.grad_accum,
         learning_rate=args.learning_rate,
         num_train_epochs=args.num_epochs,
-        max_seq_length=args.max_seq_length,
+        max_length=args.max_seq_length,
         bf16=True,
+        gradient_checkpointing=True,
+        gradient_checkpointing_kwargs={"use_reentrant": False},
         logging_steps=5,
         save_steps=50,
         save_total_limit=2,
