@@ -1,9 +1,29 @@
-torch>=2.1.0
-transformers>=4.40.0
-trl>=0.9.0
-accelerate>=0.30.0
-datasets>=2.18.0
-peft>=0.11.0
+# ─── Core Deep Learning ────────────────────────────────────────────────────────
+# Pinned to 2.4.x: torch 2.5+ added register_fsdp_forward_method to
+# torch.distributed.fsdp; transformers 4.50+ calls it, breaking FSDP on 2.4.
+torch>=2.4.0,<2.5.0
+
+# ─── HuggingFace Stack ─────────────────────────────────────────────────────────
+# transformers <4.50.0: 4.50+ calls torch.distributed.fsdp.register_fsdp_forward_method
+# which only exists in PyTorch 2.5+, causing AttributeError with FSDP training.
+# 4.44+ required for Qwen2.5 model support.
+transformers>=4.44.0,<4.50.0
+
+# trl >=0.13.0: SFTConfig.max_seq_length was renamed to max_length in 0.13,
+# processing_class= added to SFTTrainer/GRPOTrainer in 0.12,
+# GRPOConfig.num_generations available since 0.9.
+trl>=0.13.0,<0.16.0
+
+# accelerate 0.34–0.35 is the stable range for torch 2.4 + transformers 4.47.
+accelerate>=0.34.0,<0.36.0
+
+datasets>=2.18.0,<3.2.0
+peft>=0.12.0,<0.15.0
+
+# ─── API / Logging ─────────────────────────────────────────────────────────────
 openai>=1.0.0
 wandb
 tqdm
+
+# ─── Install separately (build from source) ────────────────────────────────────
+# flash-attn: pip install flash-attn --no-build-isolation
