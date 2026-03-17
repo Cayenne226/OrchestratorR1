@@ -1,14 +1,19 @@
 """
 Orchestrator-R1 GRPO Training Script
 
+Supports two modes:
+  - FSDP (Linux/WSL2): accelerate launch --config_file training/accelerate_fsdp_4gpu.yaml
+  - DDP+Gloo+LoRA (Windows native): accelerate launch --config_file training/accelerate_ddp_4gpu.yaml
+
 Usage:
-    accelerate launch --config_file training/accelerate_fsdp_4gpu.yaml \
+    accelerate launch --config_file training/accelerate_ddp_4gpu.yaml \
         training/train.py \
         --model_path models/Qwen2.5-3B-Instruct \
         --data_path data/train.jsonl \
         --output_dir checkpoints/orchestrator_r1 \
         --api_base YOUR_API_BASE \
-        --api_key YOUR_API_KEY
+        --api_key YOUR_API_KEY \
+        --use_lora
 """
 
 import argparse
@@ -16,6 +21,7 @@ import os
 import json
 from datasets import Dataset
 from transformers import AutoTokenizer, AutoModelForCausalLM
+from peft import LoraConfig, get_peft_model, TaskType
 from trl import GRPOConfig, GRPOTrainer
 
 from orchestrator_r1.agent_pool.agent_registry import AgentRegistry
@@ -48,6 +54,12 @@ def parse_args():
     parser.add_argument("--metric",              type=str, default="f1",
                         choices=["em", "f1"])
     parser.add_argument("--max_samples",         type=int, default=None)
+    # LoRA options (for DDP+Gloo on Windows)
+    parser.add_argument("--use_lora",           action="store_true",
+                        help="Use LoRA for parameter-efficient training (required for DDP on Windows)")
+    parser.add_argument("--lora_r",             type=int, default=64)
+    parser.add_argument("--lora_alpha",         type=int, default=128)
+    parser.add_argument("--lora_dropout",       type=float, default=0.05)
     return parser.parse_args()
 
 
@@ -127,6 +139,21 @@ def main():
         torch_dtype="auto",
         trust_remote_code=True,
     )
+
+    # ── LoRA (for DDP+Gloo Windows training) ──────────────────────────────
+    if args.use_lora:
+        lora_config = LoraConfig(
+            task_type=TaskType.CAUSAL_LM,
+            r=args.lora_r,
+            lora_alpha=args.lora_alpha,
+            lora_dropout=args.lora_dropout,
+            target_modules=[
+                "q_proj", "k_proj", "v_proj", "o_proj",
+                "gate_proj", "up_proj", "down_proj",
+            ],
+        )
+        model = get_peft_model(model, lora_config)
+        model.print_trainable_parameters()
 
     # ── Agent Registry ─────────────────────────────────────────────────────
     registry = AgentRegistry(api_base=args.api_base, api_key=args.api_key)

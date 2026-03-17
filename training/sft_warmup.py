@@ -4,7 +4,15 @@ SFT Warmup: Teach the Orchestrator model the <call>/<answer> tag format.
 Uses a small dataset of hand-crafted examples covering all 6 Agent types,
 so that GRPO training starts with a model that can already produce valid tags.
 
-Usage:
+Usage (Windows DDP+Gloo+LoRA):
+    accelerate launch --config_file training/accelerate_ddp_4gpu.yaml \
+        training/sft_warmup.py \
+        --model_path models/Qwen2.5-3B-Instruct \
+        --data_path data/sft_warmup.jsonl \
+        --output_dir checkpoints/sft_warmup \
+        --use_lora
+
+Usage (Linux FSDP):
     accelerate launch --config_file training/accelerate_fsdp_4gpu.yaml \
         training/sft_warmup.py \
         --model_path models/Qwen2.5-3B-Instruct \
@@ -19,6 +27,7 @@ from typing import Optional
 
 from datasets import Dataset
 from transformers import AutoTokenizer, AutoModelForCausalLM
+from peft import LoraConfig, get_peft_model, TaskType
 
 from orchestrator_r1.prompts.system_prompt import SYSTEM_PROMPT
 
@@ -33,6 +42,11 @@ def parse_args():
     parser.add_argument("--learning_rate", type=float, default=2e-5)
     parser.add_argument("--num_epochs",  type=int, default=3)
     parser.add_argument("--max_seq_length", type=int, default=2048)
+    parser.add_argument("--use_lora",      action="store_true",
+                        help="Use LoRA (required for DDP on Windows)")
+    parser.add_argument("--lora_r",        type=int, default=64)
+    parser.add_argument("--lora_alpha",    type=int, default=128)
+    parser.add_argument("--lora_dropout",  type=float, default=0.05)
     return parser.parse_args()
 
 
@@ -64,6 +78,20 @@ def main():
     model = AutoModelForCausalLM.from_pretrained(
         model_path, torch_dtype="auto", local_files_only=True,
     )
+
+    if args.use_lora:
+        lora_config = LoraConfig(
+            task_type=TaskType.CAUSAL_LM,
+            r=args.lora_r,
+            lora_alpha=args.lora_alpha,
+            lora_dropout=args.lora_dropout,
+            target_modules=[
+                "q_proj", "k_proj", "v_proj", "o_proj",
+                "gate_proj", "up_proj", "down_proj",
+            ],
+        )
+        model = get_peft_model(model, lora_config)
+        model.print_trainable_parameters()
 
     dataset = load_sft_data(args.data_path)
 
