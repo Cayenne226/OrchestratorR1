@@ -121,8 +121,7 @@ def main():
         gradient_checkpointing=True,
         gradient_checkpointing_kwargs={"use_reentrant": False},
         logging_steps=5,
-        save_steps=50,
-        save_total_limit=2,
+        save_strategy="no",           # disable mid-training saves (7B = 14GB per save)
         report_to="wandb",
         run_name="orchestrator-r1-sft-warmup",
         warmup_ratio=0.1,
