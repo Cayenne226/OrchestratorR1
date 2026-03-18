@@ -22,11 +22,11 @@ done
 
 # ── Config per mode ───────────────────────────────────────────────────────
 if [ "$A800_MODE" = true ]; then
-    echo "=== A800 Mode: 2x A800 80GB, FSDP + NCCL, 3B full fine-tuning ==="
+    echo "=== A800 Mode: 2x A800 80GB, DDP + NCCL, 3B full fine-tuning ==="
     export CUDA_VISIBLE_DEVICES=0,1
     export NCCL_DEBUG=WARNING
     export OMP_NUM_THREADS=8
-    ACCEL_CONFIG="training/accelerate_fsdp_2gpu.yaml"
+    ACCEL_CONFIG="training/accelerate_ddp_2gpu.yaml"
     MODEL_PATH=${MODEL_PATH:-"models/Qwen2.5-3B-Instruct"}
     BATCH_SIZE=4
     GRAD_ACCUM=4
