@@ -70,7 +70,10 @@ def load_dataset(data_path: str, max_samples: int | None = None) -> Dataset:
         for line in f:
             line = line.strip()
             if line:
-                records.append(json.loads(line))
+                r = json.loads(line)
+                if isinstance(r.get("answer"), list):
+                    r["answer"] = json.dumps(r["answer"], ensure_ascii=False)
+                records.append(r)
     if max_samples:
         records = records[:max_samples]
     return Dataset.from_list(records)
@@ -85,6 +88,8 @@ def build_reward_fn(registry: AgentRegistry, gen_manager_ref: dict, args):
     """
     def reward_fn(prompts: list[str], completions: list[str], **kwargs) -> list[float]:
         gold_answers = kwargs.get("answer", [None] * len(prompts))
+        gold_answers = [json.loads(g) if isinstance(g, str) and g.startswith("[") else g
+                        for g in gold_answers]
         rewards = []
 
         for prompt, completion, gold in zip(prompts, completions, gold_answers):
