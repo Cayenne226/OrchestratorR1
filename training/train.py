@@ -41,7 +41,7 @@ def parse_args():
     parser.add_argument("--grad_accum",          type=int, default=8)
     parser.add_argument("--num_generations",     type=int, default=8,
                         help="G in GRPO: rollouts per prompt")
-    parser.add_argument("--max_new_tokens",      type=int, default=512)
+    parser.add_argument("--max_completion_length", type=int, default=512)
     parser.add_argument("--max_turns",           type=int, default=6)
     parser.add_argument("--learning_rate",       type=float, default=1e-6)
     parser.add_argument("--num_epochs",          type=int, default=3)
@@ -188,7 +188,7 @@ def main():
         per_device_train_batch_size=args.per_device_batch_size,
         gradient_accumulation_steps=args.grad_accum,
         num_generations=args.num_generations,    # G=8 rollouts per prompt
-        max_new_tokens=args.max_new_tokens,
+        max_completion_length=args.max_completion_length,
         learning_rate=args.learning_rate,
         num_train_epochs=args.num_epochs,
         bf16=True,

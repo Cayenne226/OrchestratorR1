@@ -72,7 +72,7 @@ accelerate launch \
     --per_device_batch_size "$BATCH_SIZE" \
     --grad_accum "$GRAD_ACCUM" \
     --num_generations 8 \
-    --max_new_tokens 512 \
+    --max_completion_length 512 \
     --max_turns 6 \
     --learning_rate "$LEARNING_RATE" \
     --num_epochs 3 \
