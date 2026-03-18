@@ -12,12 +12,21 @@ export PYTHONPATH=$(dirname "$0")/..
 API_BASE=${API_BASE:-"YOUR_API_BASE"}
 API_KEY=${API_KEY:-"YOUR_API_KEY"}
 
-# ── Parse mode flags ──────────────────────────────────────────────────────
+# ── Parse mode flags, collect extra args for train.py ─────────────────────
 A800_MODE=false
 WINDOWS_MODE=false
+EXTRA_ARGS=""
+skip_next=false
 for arg in "$@"; do
-    [ "$arg" = "--a800" ]    && A800_MODE=true
-    [ "$arg" = "--windows" ] && WINDOWS_MODE=true
+    if $skip_next; then skip_next=false; EXTRA_ARGS="$EXTRA_ARGS $arg"; continue; fi
+    case "$arg" in
+        --a800)    A800_MODE=true ;;
+        --windows) WINDOWS_MODE=true ;;
+        --max_samples|--num_epochs|--alpha|--beta|--gamma|--metric|--max_turns)
+                   EXTRA_ARGS="$EXTRA_ARGS $arg"; skip_next=true ;;
+        --max_samples=*|--num_epochs=*) EXTRA_ARGS="$EXTRA_ARGS $arg" ;;
+        *) ;;
+    esac
 done
 
 # ── Config per mode ───────────────────────────────────────────────────────
@@ -80,4 +89,5 @@ accelerate launch \
     --beta 0.1 \
     --gamma 0.15 \
     --metric f1 \
-    $LORA_FLAG
+    $LORA_FLAG \
+    $EXTRA_ARGS
