@@ -37,11 +37,17 @@ def parse_args():
 def main():
     args = parse_args()
 
-    # Load model
-    model_path = str(Path(args.model_path).resolve())
-    tokenizer = AutoTokenizer.from_pretrained(model_path, local_files_only=True)
+    # Load model (supports both local path and HuggingFace repo ID)
+    model_path = args.model_path
+    if not model_path.startswith("/") and not model_path.startswith(".") and "\\" not in model_path and ":" not in model_path:
+        # Looks like a HF repo ID (e.g. "username/model-name")
+        local_only = False
+    else:
+        model_path = str(Path(model_path).resolve())
+        local_only = True
+    tokenizer = AutoTokenizer.from_pretrained(model_path, local_files_only=local_only)
     model = AutoModelForCausalLM.from_pretrained(
-        model_path, torch_dtype="auto", local_files_only=True,
+        model_path, torch_dtype="auto", local_files_only=local_only,
     ).to(args.device)
     model.eval()
 
