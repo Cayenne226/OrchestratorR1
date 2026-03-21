@@ -19,6 +19,7 @@ accelerate>=0.34.0,<0.36.0
 
 datasets>=2.18.0,<3.2.0
 peft>=0.12.0,<0.15.0
+deepspeed>=0.14.0,<0.16.0             # ZeRO-2 full-param training on Windows
 
 # ─── API / Logging ─────────────────────────────────────────────────────────────
 openai>=1.0.0
@@ -27,3 +28,12 @@ tqdm
 
 # ─── Install separately (build from source) ────────────────────────────────────
 # flash-attn: pip install flash-attn --no-build-isolation
+#
+# ─── Windows 4x RTX 3090 Notes ─────────────────────────────────────────────────
+# 1. Install PyTorch with CUDA:  pip install torch==2.4.1 --index-url https://download.pytorch.org/whl/cu121
+# 2. NCCL is NOT available on Windows; Gloo backend is used instead (set automatically by .bat)
+# 3. Two training modes on Windows:
+#    - LoRA:      train_lora.bat  — DDP + Gloo, ~8GB/GPU, fast experiments
+#    - Full-param: train_full.bat — DeepSpeed ZeRO-2 + Gloo, ~16.5GB/GPU
+# 4. flash-attn does NOT support Windows; training works without it (slightly slower)
+# 5. DeepSpeed on Windows: pip install deepspeed  (no C++ build needed for ZeRO stages)

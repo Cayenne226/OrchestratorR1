@@ -4,24 +4,13 @@ SFT Warmup: Teach the Orchestrator model the <call>/<answer> tag format.
 Uses a small dataset of hand-crafted examples covering all 6 Agent types,
 so that GRPO training starts with a model that can already produce valid tags.
 
-Usage (Windows DDP+Gloo+LoRA):
-    accelerate launch --config_file training/accelerate_ddp_4gpu.yaml \
-        training/sft_warmup.py \
-        --model_path models/Qwen2.5-3B-Instruct \
-        --data_path data/sft_warmup.jsonl \
-        --output_dir checkpoints/sft_warmup \
-        --use_lora
-
-Usage (Linux FSDP):
-    accelerate launch --config_file training/accelerate_fsdp_4gpu.yaml \
-        training/sft_warmup.py \
-        --model_path models/Qwen2.5-3B-Instruct \
-        --data_path data/sft_warmup.jsonl \
-        --output_dir checkpoints/sft_warmup
+Usage (Windows LoRA):      training\\sft_warmup_lora.bat
+Usage (Windows Full-param): training\\sft_warmup_full.bat
 """
 
 import argparse
 import json
+import sys
 from pathlib import Path
 from typing import Optional
 
@@ -30,6 +19,8 @@ from transformers import AutoTokenizer, AutoModelForCausalLM
 from peft import LoraConfig, get_peft_model, TaskType
 
 from orchestrator_r1.prompts.system_prompt import SYSTEM_PROMPT
+
+IS_WINDOWS = sys.platform == "win32"
 
 
 def parse_args():
@@ -43,10 +34,12 @@ def parse_args():
     parser.add_argument("--num_epochs",  type=int, default=3)
     parser.add_argument("--max_seq_length", type=int, default=512)
     parser.add_argument("--use_lora",      action="store_true",
-                        help="Use LoRA (required for DDP on Windows)")
+                        help="Use LoRA (DDP mode)")
     parser.add_argument("--lora_r",        type=int, default=64)
     parser.add_argument("--lora_alpha",    type=int, default=128)
     parser.add_argument("--lora_dropout",  type=float, default=0.05)
+    parser.add_argument("--gradient_checkpointing", action="store_true",
+                        help="Enable gradient checkpointing (recommended for full-param)")
     return parser.parse_args()
 
 
@@ -79,6 +72,12 @@ def main():
         model_path, torch_dtype="auto", local_files_only=True,
     )
 
+    if args.gradient_checkpointing:
+        model.gradient_checkpointing_enable(
+            gradient_checkpointing_kwargs={"use_reentrant": False}
+        )
+        print("Gradient checkpointing enabled")
+
     if args.use_lora:
         lora_config = LoraConfig(
             task_type=TaskType.CAUSAL_LM,
@@ -92,6 +91,10 @@ def main():
         )
         model = get_peft_model(model, lora_config)
         model.print_trainable_parameters()
+    else:
+        total_params = sum(p.numel() for p in model.parameters())
+        trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+        print(f"Full-param training: {trainable:,} / {total_params:,} parameters")
 
     dataset = load_sft_data(args.data_path)
 
@@ -110,6 +113,10 @@ def main():
 
     from trl import SFTConfig, SFTTrainer
 
+    # Windows: dataloader workers must be 0 (spawn-based multiprocessing causes
+    # CUDA re-init errors); Linux can use 2 for prefetching.
+    num_workers = 0 if IS_WINDOWS else 2
+
     sft_config = SFTConfig(
         output_dir=args.output_dir,
         per_device_train_batch_size=args.per_device_batch_size,
@@ -118,8 +125,9 @@ def main():
         num_train_epochs=args.num_epochs,
         max_length=args.max_seq_length,
         bf16=True,
-        gradient_checkpointing=True,
+        gradient_checkpointing=args.gradient_checkpointing,
         gradient_checkpointing_kwargs={"use_reentrant": False},
+        dataloader_num_workers=num_workers,
         logging_steps=5,
         save_strategy="no",           # disable mid-training saves (7B = 14GB per save)
         report_to="wandb",

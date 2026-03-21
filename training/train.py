@@ -1,23 +1,21 @@
 """
 Orchestrator-R1 GRPO Training Script
 
-Supports two modes:
-  - FSDP (Linux/WSL2): accelerate launch --config_file training/accelerate_fsdp_4gpu.yaml
-  - DDP+Gloo+LoRA (Windows native): accelerate launch --config_file training/accelerate_ddp_4gpu.yaml
+Supports three modes on Windows:
+  1. LoRA (DDP+Gloo):       train_lora.bat   — ~8GB/GPU, fast experiments
+  2. Full-param (ZeRO-2):   train_full.bat   — ~16.5GB/GPU, full capacity
+  3. FSDP (Linux/WSL2 only): train.sh         — requires NCCL
 
-Usage:
-    accelerate launch --config_file training/accelerate_ddp_4gpu.yaml \
-        training/train.py \
-        --model_path models/Qwen2.5-3B-Instruct \
-        --data_path data/train.jsonl \
-        --output_dir checkpoints/orchestrator_r1 \
-        --api_base YOUR_API_BASE \
-        --api_key YOUR_API_KEY \
-        --use_lora
+Usage (Windows LoRA):
+    training\\train_lora.bat
+
+Usage (Windows Full-param):
+    training\\train_full.bat
 """
 
 import argparse
 import os
+import sys
 import json
 from datasets import Dataset
 from transformers import AutoTokenizer, AutoModelForCausalLM
@@ -28,6 +26,8 @@ from orchestrator_r1.agent_pool.agent_registry import AgentRegistry
 from orchestrator_r1.orchestrator.generation import OrchestratorGenerationManager, GenerationConfig
 from orchestrator_r1.orchestrator.reward import compute_reward
 from orchestrator_r1.prompts.system_prompt import SYSTEM_PROMPT
+
+IS_WINDOWS = sys.platform == "win32"
 
 
 def parse_args():
@@ -56,10 +56,13 @@ def parse_args():
     parser.add_argument("--max_samples",         type=int, default=None)
     # LoRA options (for DDP+Gloo on Windows)
     parser.add_argument("--use_lora",           action="store_true",
-                        help="Use LoRA for parameter-efficient training (required for DDP on Windows)")
+                        help="Use LoRA for parameter-efficient training (DDP mode)")
     parser.add_argument("--lora_r",             type=int, default=64)
     parser.add_argument("--lora_alpha",         type=int, default=128)
     parser.add_argument("--lora_dropout",       type=float, default=0.05)
+    # Full-param options (for DeepSpeed ZeRO-2 on Windows)
+    parser.add_argument("--gradient_checkpointing", action="store_true",
+                        help="Enable gradient checkpointing to reduce VRAM (recommended for full-param)")
     return parser.parse_args()
 
 
@@ -145,6 +148,13 @@ def main():
         trust_remote_code=True,
     )
 
+    # ── Gradient Checkpointing (for full-param ZeRO-2 training) ─────────
+    if args.gradient_checkpointing:
+        model.gradient_checkpointing_enable(
+            gradient_checkpointing_kwargs={"use_reentrant": False}
+        )
+        print("Gradient checkpointing enabled")
+
     # ── LoRA (for DDP+Gloo Windows training) ──────────────────────────────
     if args.use_lora:
         lora_config = LoraConfig(
@@ -159,6 +169,10 @@ def main():
         )
         model = get_peft_model(model, lora_config)
         model.print_trainable_parameters()
+    else:
+        total_params = sum(p.numel() for p in model.parameters())
+        trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+        print(f"Full-param training: {trainable:,} / {total_params:,} parameters")
 
     # ── Agent Registry ─────────────────────────────────────────────────────
     registry = AgentRegistry(api_base=args.api_base, api_key=args.api_key)
@@ -183,6 +197,10 @@ def main():
     reward_fn = build_reward_fn(registry, {}, args)
 
     # ── GRPO Config ────────────────────────────────────────────────────────
+    # Windows: dataloader workers must be 0 (spawn-based multiprocessing causes
+    # CUDA re-init errors); Linux can use 2 for prefetching.
+    num_workers = 0 if IS_WINDOWS else 2
+
     grpo_config = GRPOConfig(
         output_dir=args.output_dir,
         per_device_train_batch_size=args.per_device_batch_size,
@@ -192,7 +210,7 @@ def main():
         learning_rate=args.learning_rate,
         num_train_epochs=args.num_epochs,
         bf16=True,
-        dataloader_num_workers=2,
+        dataloader_num_workers=num_workers,
         logging_steps=10,
         save_steps=100,
         save_total_limit=2,

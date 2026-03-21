@@ -1,9 +1,10 @@
 #!/bin/bash
 # Orchestrator-R1 Training Script
 # Usage:
-#   2x A800 80GB (Linux, 7B full FT):   bash training/train.sh --a800
-#   4x RTX 3090 (Linux/WSL2, 3B):       bash training/train.sh
-#   4x RTX 3090 (Windows, 3B+LoRA):     bash training/train.sh --windows
+#   2x A800 80GB (Linux, full FT):         bash training/train.sh --a800
+#   4x RTX 3090 (Linux, FSDP full FT):     bash training/train.sh
+#   4x RTX 3090 (Windows, LoRA):           training\train_lora.bat
+#   4x RTX 3090 (Windows, ZeRO-2 full FT): training\train_full.bat
 
 export TOKENIZERS_PARALLELISM=false
 export PYTHONPATH=$(dirname "$0")/..

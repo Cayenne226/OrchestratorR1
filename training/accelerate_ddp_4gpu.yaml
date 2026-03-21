@@ -1,8 +1,12 @@
 compute_environment: LOCAL_MACHINE
-distributed_type: MULTI_GPU                    # DDP (not FSDP)
+distributed_type: MULTI_GPU                    # DDP (not FSDP — compatible with Gloo on Windows)
 mixed_precision: bf16
 num_machines: 1
 num_processes: 4                               # 4x RTX 3090
 machine_rank: 0
 main_training_function: main
 use_cpu: false
+
+# Windows-specific: NCCL is not available on Windows, use Gloo backend.
+# This is also set via ACCELERATE_TORCH_DISTRIBUTED_BACKEND=gloo in train.bat,
+# but declaring it here makes the config self-contained.
