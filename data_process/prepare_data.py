@@ -113,7 +113,6 @@ def load_source(name: str, split: str, max_samples: int) -> list[dict]:
             cfg["hf_config"],
             split=hf_split,
             streaming=True,
-            trust_remote_code=True,
         )
     except Exception as e:
         print(f"  [WARN] Failed to load {name}: {e}")
