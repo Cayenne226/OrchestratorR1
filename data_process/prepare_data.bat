@@ -14,6 +14,8 @@ pushd %~dp0..
 set PYTHONPATH=%CD%
 popd
 
+if "%HF_ENDPOINT%"=="" set HF_ENDPOINT=https://hf-mirror.com
+
 echo ============================================================
 echo   Preparing Router-R1 aligned datasets
 echo   Train: NQ 7k + HotpotQA 7k = 14k
