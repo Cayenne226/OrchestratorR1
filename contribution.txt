@@ -1,0 +1,31 @@
+Contributions
+Our main contributions are as follows:
+
+We formulate multi-agent orchestration as a learnable RL problem. We propose a unified MDP framework where a small LLM acts as an orchestrator over a pool of functionally specialized agents (refiner, decomposer, executor, critic, synthesizer). Unlike prior routing approaches that select which model to query, our formulation enables the orchestrator to decide what functional action to take at each step—including task decomposition, input refinement, intermediate verification, and result synthesis—within a coherent sequential decision process. To our knowledge, this is the first work to train an end-to-end RL policy for multi-agent orchestration, bridging the gap between LLM routing (Router-R1) and hand-engineered multi-agent systems (AutoGen, CrewAI).
+
+We demonstrate that adaptive orchestration strategies emerge from end-to-end RL with a single reward function. Through GRPO training with a composite reward balancing answer quality, API cost, and turn efficiency, the orchestrator spontaneously develops a spectrum of task-dependent behaviors: simple queries trigger single-step execution, while complex queries activate multi-step decomposition-execution-verification-synthesis pipelines. This emergent adaptivity—validated through agent call distribution heatmaps and training dynamics analysis—stands in contrast to both fixed-pipeline approaches and routing methods that lack functional differentiation across invocations.
+
+We achieve superior performance across a broader task scope with lower training cost. OrchestratorR1 outperforms Router-R1 and other strong baselines (Direct-GPT-4o, ReAct, Reflexion) on three evaluation tracks: simple QA, multi-hop reasoning, and code generation—the last of which is entirely outside the scope of existing routing methods. Our GRPO-based training requires only a single network (no critic model or vLLM rollout engine), runs on 4×RTX 3090 GPUs in 12–20 hours, and consumes less than $5 in API costs, demonstrating that sophisticated orchestration capabilities can be acquired efficiently.
+
+We propose reactive sequential orchestration, where the orchestrator makes step-by-step decisions conditioned on intermediate agent responses. Unlike prior plan-then-execute approaches (Conductor, AgentConductor) that generate complete workflows upfront, our closed-loop formulation enables real-time strategy adaptation within a single problem-solving episode.
+
+We introduce cost-aware orchestration with explicit Pareto optimization. While existing methods either ignore cost (Conductor) or use domain-specific density metrics (AgentConductor), our unified reward directly penalizes API cost and turn count, enabling practitioners to tune the cost-quality tradeoff via a single hyperparameter α—critical for production deployment.
+
+We demonstrate that a single orchestration policy generalizes across three fundamentally different task modalities—factoid QA, multi-hop reasoning, and code generation—using general-purpose functional agents (refiner, decomposer, executor, critic, synthesizer), whereas prior work is restricted to either reasoning (Conductor) or code (AgentConductor)
+
+
+related work
+RL-Learned Agent Orchestration. Recent work has demonstrated that reinforcement learning can train small LLMs to coordinate multi-agent systems. The Conductor (Nielsen et al., 2025) trains a 7B model via GRPO to generate complete agentic workflows—specifying agent selection, subtask prompts, and communication topologies—in a single forward pass, achieving state-of-the-art results on reasoning benchmarks (ICLR 2026). AgentConductor (Wang et al., 2026) extends this to competition-level code generation, using SFT+GRPO to train an orchestrator that generates difficulty-aware DAG topologies with an explicit density objective. Both methods follow a plan-then-execute paradigm: the orchestrator produces a complete workflow before any agent is invoked. In contrast, OrchestratorR1 adopts a reactive sequential paradigm where the orchestrator observes each agent's response before deciding the next action, enabling closed-loop adaptation. Furthermore, our framework is the first to incorporate explicit cost optimization and to demonstrate cross-modality generalization (QA, reasoning, and code) under a single learned policy.
+
+
+
+贡献
+本文的主要贡献如下：
+
+将多 Agent 编排建模为可学习的强化学习问题。 我们提出一个统一 MDP 框架，由一个小型 LLM 作为编排器，调度一组功能专业化的 Agent（refiner、decomposer、executor、critic、synthesizer）。与仅选择"向哪个模型提问"的路由方法不同，我们的框架使编排器能够在每一步决策"执行何种功能动作"——包括任务分解、输入精化、中间验证和结果综合——形成连贯的序列决策过程。据我们所知，这是首个通过端到端 RL 训练多 Agent 编排策略的工作，填补了 LLM 路由（Router-R1）与手工设计多 Agent 系统（AutoGen、CrewAI）之间的空白。
+
+证明自适应编排策略可在单一奖励函数驱动的端到端 RL 中自发涌现。 通过以答案质量、API 成本和交互效率为综合目标的 GRPO 训练，编排器自发形成任务依赖型的行为谱：简单查询触发单步执行，复杂查询激活分解-执行-验证-综合的多步流水线。这一涌现自适应性通过 Agent 调用分布热力图和训练动态分析得到可视化验证，与固定流水线方法及缺乏功能分工的路由方法形成鲜明对比。
+
+在更广泛的任务范围内以更低的训练成本取得更优性能。 OrchestratorR1 在三个评估赛道上超越 Router-R1 及其他强基线（Direct-GPT-4o、ReAct、Reflexion）：简单 QA、多跳推理以及代码生成——其中代码生成完全超出现有路由方法的支持范围。基于 GRPO 的训练仅需单一网络（无需 Critic 模型或 vLLM 推理引擎），在 4 张 RTX 3090 上运行 12~20 小时即可完成，API 调用成本不超过 5 美元，充分证明了高水平编排能力的高效可获得性。
+
+OrchestratorR1 的优势：能根据中间结果实时调整后续策略。例如 executor 返回了低质量结果，可以临时决定调用 critic 再重试——这种反应式编排在 Conductor 的一次性规划中无法实现（除非走递归，但那是 episode 级别的重规划）。

@@ -2,12 +2,12 @@
 Prepare code task data from HumanEval and MBPP.
 
 Converts code benchmark tasks into the unified format:
-    {"input": "task description", "answer": "canonical solution", "source": "humaneval", "test_cases": "..."}
+    {"input": "task description", "answer": "canonical solution", "source": "humaneval",
+     "task_id": "HumanEval/0", "test_cases": "...", "difficulty": "code"}
 
 Usage:
-    python data_process/prepare_code.py --source humaneval --output data/test_code.jsonl
-    python data_process/prepare_code.py --source mbpp --output data/test_mbpp.jsonl
-    python data_process/prepare_code.py --source humaneval,mbpp --output data/train_code.jsonl
+    python data_process/prepare_code.py --source humaneval,mbpp --split test --output data/test_code.jsonl
+    python data_process/prepare_code.py --source mbpp --split train --output data/train_code.jsonl
 """
 
 import argparse
@@ -17,8 +17,11 @@ from pathlib import Path
 from datasets import load_dataset
 
 
-def load_humaneval(max_samples: int) -> list:
-    """Load HumanEval dataset."""
+def load_humaneval(max_samples: int, split: str = "test") -> list:
+    """Load HumanEval dataset. Only has 'test' split (164 problems)."""
+    if split == "train":
+        print("  [INFO] HumanEval has no train split, skipping.")
+        return []
     try:
         ds = load_dataset("openai_humaneval", split="test")
     except Exception as e:
@@ -46,6 +49,7 @@ def load_humaneval(max_samples: int) -> list:
             "source": "humaneval",
             "task_id": task_id,
             "test_cases": test,
+            "difficulty": "code",
         })
 
         if len(records) >= max_samples:
@@ -54,15 +58,19 @@ def load_humaneval(max_samples: int) -> list:
     return records
 
 
-def load_mbpp(max_samples: int) -> list:
-    """Load MBPP dataset."""
+def load_mbpp(max_samples: int, split: str = "test") -> list:
+    """Load MBPP sanitized dataset.
+
+    Splits: train (374), test (427), validation (90).
+    """
+    hf_split = split if split in ("train", "test", "validation") else "test"
     try:
-        ds = load_dataset("mbpp", "sanitized", split="test")
+        ds = load_dataset("mbpp", "sanitized", split=hf_split)
     except Exception as e:
-        print(f"[WARN] Failed to load MBPP sanitized: {e}")
+        print(f"[WARN] Failed to load MBPP sanitized split={hf_split}: {e}")
         try:
             ds = load_dataset("google-research-datasets/mbpp", "sanitized",
-                              split="test")
+                              split=hf_split)
         except Exception as e2:
             print(f"[WARN] Also failed: {e2}")
             return []
@@ -83,6 +91,7 @@ def load_mbpp(max_samples: int) -> list:
             "source": "mbpp",
             "task_id": str(task_id),
             "test_cases": "\n".join(tests) if tests else "",
+            "difficulty": "code",
         })
 
         if len(records) >= max_samples:

@@ -21,8 +21,18 @@ from pathlib import Path
 from datasets import load_dataset
 
 
+DIFFICULTY_MAP = {
+    "nq": "simple",
+    "triviaqa": "simple",
+    "popqa": "simple",
+    "hotpotqa": "multi_hop",
+    "2wikimultihop": "multi_hop",
+    "musique": "multi_hop",
+    "bamboogle": "multi_hop",
+}
+
 DATASET_CONFIGS = {
-    # ── Router-R1 aligned datasets ────────────────────────────────────────────
+    # ── Track 1: Simple QA ─────────────────────────────────────────────────────
     "nq": {
         # nq_open: clean Q/A pairs from Natural Questions (no HTML documents)
         # train: 87,925 rows, validation: 3,610 rows
@@ -33,17 +43,6 @@ DATASET_CONFIGS = {
         "train_split": "train",
         "test_split": "validation",
     },
-    "hotpotqa": {
-        # HotpotQA distractor setting — multi-hop QA
-        # train: 90,447 rows, validation: 7,405 rows
-        "hf_name": "hotpot_qa",
-        "hf_config": "distractor",
-        "question_key": "question",
-        "answer_fn": lambda ex: ex["answer"],  # str
-        "train_split": "train",
-        "test_split": "validation",
-    },
-    # ── Additional datasets ───────────────────────────────────────────────────
     "triviaqa": {
         "hf_name": "trivia_qa",
         "hf_config": "rc.nocontext",
@@ -56,9 +55,20 @@ DATASET_CONFIGS = {
         "hf_name": "akariasai/PopQA",
         "hf_config": None,
         "question_key": "question",
-        "answer_fn": lambda ex: ex["possible_answers"],
+        "answer_fn": lambda ex: [a for a in ex["possible_answers"].split("; ") if a.strip()] if isinstance(ex["possible_answers"], str) else ex["possible_answers"],
         "train_split": "train",
         "test_split": "test",
+    },
+    # ── Track 2: Multi-hop Reasoning ───────────────────────────────────────────
+    "hotpotqa": {
+        # HotpotQA distractor setting — multi-hop QA
+        # train: 90,447 rows, validation: 7,405 rows
+        "hf_name": "hotpot_qa",
+        "hf_config": "distractor",
+        "question_key": "question",
+        "answer_fn": lambda ex: ex["answer"],  # str
+        "train_split": "train",
+        "test_split": "validation",
     },
     "2wikimultihop": {
         "hf_name": "xanhho/2WikiMultihopQA",
@@ -69,7 +79,7 @@ DATASET_CONFIGS = {
         "test_split": "validation",
     },
     "musique": {
-        "hf_name": "musique",
+        "hf_name": "drt/musique",
         "hf_config": None,
         "question_key": "question",
         "answer_fn": lambda ex: ex["answer"],
@@ -97,6 +107,17 @@ PRESETS = {
         "sources": ["nq", "hotpotqa"],
         "split": "test",
         "max_per_source": 500,        # 500 NQ + 500 HotpotQA = 1k test
+    },
+    # ── OrchestratorR1: 6 datasets × 3 tracks ──────────────────────────────
+    "orch_r1_train": {
+        "sources": ["nq", "triviaqa", "popqa", "hotpotqa", "2wikimultihop", "musique"],
+        "split": "train",
+        "max_per_source": 1000,       # 6 × 1k = 6k total
+    },
+    "orch_r1_test": {
+        "sources": ["nq", "triviaqa", "popqa", "hotpotqa", "2wikimultihop", "musique"],
+        "split": "test",
+        "max_per_source": 500,        # 6 × 500 = 3k total
     },
 }
 
@@ -142,7 +163,8 @@ def load_source(name: str, split: str, max_samples: int) -> list[dict]:
             # Single-element list → flatten to str
             if len(answer) == 1:
                 answer = answer[0]
-        records.append({"input": question, "answer": answer, "source": name})
+        difficulty = DIFFICULTY_MAP.get(name, "simple")
+        records.append({"input": question, "answer": answer, "source": name, "difficulty": difficulty})
         if len(records) >= max_samples:
             break
 
