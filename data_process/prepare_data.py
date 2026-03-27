@@ -52,11 +52,13 @@ DATASET_CONFIGS = {
         "test_split": "validation",
     },
     "popqa": {
+        # PopQA only has 'test' split — for training, we take the first N from 'test'
+        # and for evaluation we take a different slice (handled by seed + shuffle)
         "hf_name": "akariasai/PopQA",
         "hf_config": None,
         "question_key": "question",
         "answer_fn": lambda ex: [a for a in ex["possible_answers"].split("; ") if a.strip()] if isinstance(ex["possible_answers"], str) else ex["possible_answers"],
-        "train_split": "train",
+        "train_split": "test",
         "test_split": "test",
     },
     # ── Track 2: Multi-hop Reasoning ───────────────────────────────────────────
@@ -71,7 +73,7 @@ DATASET_CONFIGS = {
         "test_split": "validation",
     },
     "2wikimultihop": {
-        "hf_name": "xanhho/2WikiMultihopQA",
+        "hf_name": "ohjoonhee/2WikiMultihopQA",
         "hf_config": None,
         "question_key": "question",
         "answer_fn": lambda ex: ex["answer"],
@@ -79,7 +81,7 @@ DATASET_CONFIGS = {
         "test_split": "validation",
     },
     "musique": {
-        "hf_name": "drt/musique",
+        "hf_name": "bdsaglam/musique",
         "hf_config": None,
         "question_key": "question",
         "answer_fn": lambda ex: ex["answer"],

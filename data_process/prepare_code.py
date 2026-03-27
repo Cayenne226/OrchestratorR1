@@ -59,17 +59,19 @@ def load_humaneval(max_samples: int, split: str = "test") -> list:
 
 
 def load_mbpp(max_samples: int, split: str = "test") -> list:
-    """Load MBPP sanitized dataset.
+    """Load MBPP full dataset.
 
-    Splits: train (374), test (427), validation (90).
+    Full splits: train (374), test (500), validation (90), prompt (10).
+    Sanitized splits: train (120), test (257), validation (43).
+    Using 'full' config for larger sample counts.
     """
     hf_split = split if split in ("train", "test", "validation") else "test"
     try:
-        ds = load_dataset("mbpp", "sanitized", split=hf_split)
+        ds = load_dataset("mbpp", "full", split=hf_split)
     except Exception as e:
-        print(f"[WARN] Failed to load MBPP sanitized split={hf_split}: {e}")
+        print(f"[WARN] Failed to load MBPP full split={hf_split}: {e}")
         try:
-            ds = load_dataset("google-research-datasets/mbpp", "sanitized",
+            ds = load_dataset("google-research-datasets/mbpp", "full",
                               split=hf_split)
         except Exception as e2:
             print(f"[WARN] Also failed: {e2}")
@@ -77,7 +79,8 @@ def load_mbpp(max_samples: int, split: str = "test") -> list:
 
     records = []
     for ex in ds:
-        prompt = ex.get("prompt", "").strip()
+        # 'full' config uses 'text', 'sanitized' uses 'prompt'
+        prompt = (ex.get("prompt", "") or ex.get("text", "")).strip()
         code = ex.get("code", "").strip()
         tests = ex.get("test_list", [])
         task_id = ex.get("task_id", "")
@@ -110,6 +113,9 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--source", type=str, default="humaneval",
                         help="Comma-separated: humaneval,mbpp")
+    parser.add_argument("--split", type=str, default="test",
+                        choices=["train", "test"],
+                        help="Dataset split to use")
     parser.add_argument("--max_per_source", type=int, default=500)
     parser.add_argument("--output", type=str, required=True)
     args = parser.parse_args()
@@ -121,8 +127,8 @@ def main():
         if source not in LOADERS:
             print(f"[WARN] Unknown source: {source}, skipping")
             continue
-        print(f"Loading {source}...")
-        records = LOADERS[source](args.max_per_source)
+        print(f"Loading {source} (split={args.split})...")
+        records = LOADERS[source](args.max_per_source, split=args.split)
         print(f"  Loaded {len(records)} samples from {source}")
         all_records.extend(records)
 

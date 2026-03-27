@@ -34,6 +34,7 @@ AGENT_SYSTEM_PROMPTS = {
 }
 
 # Agent type → (model_name, cost_per_1m_tokens)
+# "cheap" pool — default, used during training and cost-efficient evaluation
 AGENT_MODEL_CONFIG = {
     "refiner":        ("gpt-4o-mini",         0.15),
     "decomposer":     ("gpt-4o",              2.50),
@@ -43,11 +44,28 @@ AGENT_MODEL_CONFIG = {
     "synthesizer":    ("gpt-4o-mini",         0.15),
 }
 
+# "matched" pool — aligned with Conductor's frontier worker pool for fair comparison
+AGENT_MODEL_CONFIG_MATCHED = {
+    "refiner":        ("claude-sonnet-4",      3.00),
+    "decomposer":     ("gemini-2.5-pro",       1.25),
+    "executor_cheap": ("qwen3-32b",            0.50),
+    "executor_strong":("gpt-5",               10.00),
+    "critic":         ("deepseek-r1-32b",      0.50),
+    "synthesizer":    ("gemma3-27b",           0.30),
+}
+
+WORKER_POOLS = {
+    "cheap": AGENT_MODEL_CONFIG,
+    "matched": AGENT_MODEL_CONFIG_MATCHED,
+}
+
 
 class AgentRegistry:
-    def __init__(self, api_base: str, api_key: str):
+    def __init__(self, api_base: str, api_key: str, worker_pool: str = "cheap"):
+        pool = WORKER_POOLS.get(worker_pool, AGENT_MODEL_CONFIG)
+        self.pool_name = worker_pool
         self.agents: dict[str, BaseAgent] = {}
-        for agent_type, (model_name, cost) in AGENT_MODEL_CONFIG.items():
+        for agent_type, (model_name, cost) in pool.items():
             self.agents[agent_type] = BaseAgent(
                 model_name=model_name,
                 cost_per_1m=cost,

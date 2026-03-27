@@ -14,10 +14,11 @@
 | ID | 任务 | 日期 | 优先级 | 依赖 | 状态 |
 |----|------|------|--------|------|------|
 | T2.1 | SFT 热身训练 (7B) | 3/31 | P0 | W1全部 | [ ] |
-| T2.2 | GRPO 主训练 Seed 1 | 3/31-4/02 | P0 | T2.1 | [ ] |
-| T2.3 | GRPO Seed 2, 3 | 4/02-4/05 | P0 | T2.1 | [ ] |
+| T2.2 | GRPO 主训练 Seed 1 (cross-modal) | 3/31-4/02 | P0 | T2.1 | [ ] |
+| T2.3 | GRPO Seed 2, 3 (cross-modal) | 4/02-4/05 | P0 | T2.1 | [ ] |
 | T2.4 | 全数据集评估 (3 seeds) | 4/05-4/06 | P0 | T2.2-T2.3 | [ ] |
 | T2.5 | 3B 对比训练 (并行) | 3/31-4/04 | P1 | W1全部 | [ ] |
+| T2.6 | GRPO matched 训练 (NQ+HotQA 14k) | 4/04-4/05 | P1 | T2.1 | [ ] |
 
 ## 日程安排
 
@@ -66,9 +67,10 @@
 ```
 checkpoints/
 ├── sft_warmup_7b/              ← T2.1
-├── orch_grpo_7b_seed1/final/   ← T2.2
+├── orch_grpo_7b_seed1/final/   ← T2.2 (cross-modal, train_mixed 6.4k)
 ├── orch_grpo_7b_seed2/final/   ← T2.3
 ├── orch_grpo_7b_seed3/final/   ← T2.3
+├── orch_grpo_7b_matched/final/ ← T2.6 (NQ+HotQA 14k, for Router-R1 comparison)
 ├── sft_warmup_3b/              ← T2.5
 └── orch_grpo_3b_seed1/final/   ← T2.5
 

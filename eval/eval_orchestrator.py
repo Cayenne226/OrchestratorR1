@@ -19,6 +19,7 @@ from transformers import AutoTokenizer, AutoModelForCausalLM
 from orchestrator_r1.agent_pool.agent_registry import AgentRegistry
 from orchestrator_r1.orchestrator.generation import OrchestratorGenerationManager, GenerationConfig
 from orchestrator_r1.orchestrator.reward import compute_em, compute_f1
+from eval.metrics import compute_metric
 
 
 def parse_args():
@@ -30,6 +31,9 @@ def parse_args():
     parser.add_argument("--output",      type=str, default="eval/results/orchestrator_r1.json")
     parser.add_argument("--max_turns",   type=int, default=6)
     parser.add_argument("--max_samples", type=int, default=None)
+    parser.add_argument("--worker_pool", type=str, default="cheap",
+                        choices=["cheap", "matched"],
+                        help="Worker pool configuration: 'cheap' or 'matched'")
     parser.add_argument("--device",      type=str, default="cuda")
     return parser.parse_args()
 
@@ -51,7 +55,8 @@ def main():
     ).to(args.device)
     model.eval()
 
-    registry = AgentRegistry(api_base=args.api_base, api_key=args.api_key)
+    registry = AgentRegistry(api_base=args.api_base, api_key=args.api_key,
+                              worker_pool=args.worker_pool)
     gen_config = GenerationConfig(max_turns=args.max_turns)
     manager = OrchestratorGenerationManager(model, tokenizer, registry, gen_config)
 
@@ -75,6 +80,7 @@ def main():
 
         em = compute_em(pred, gold)
         f1 = compute_f1(pred, gold)
+        metrics = compute_metric(pred, record)
         total_em   += em
         total_f1   += f1
         total_cost += rollout.total_cost
@@ -86,15 +92,18 @@ def main():
             "pred":        pred,
             "em":          em,
             "f1":          f1,
+            "metrics":     metrics,
             "n_turns":     rollout.n_turns,
             "total_cost":  rollout.total_cost,
             "agent_calls": rollout.agent_calls,
             "source":      record.get("source", ""),
+            "difficulty":  record.get("difficulty", ""),
         })
 
     n = len(results)
     summary = {
         "n_samples":    n,
+        "worker_pool":  args.worker_pool,
         "em":           total_em / n,
         "f1":           total_f1 / n,
         "avg_cost_usd": total_cost / n,

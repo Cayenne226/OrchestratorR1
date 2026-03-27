@@ -1,19 +1,21 @@
 """
 Auto-generate SFT warmup examples using GPT-4o.
 
-Samples real questions from train.jsonl (NQ + HotpotQA), sends them to GPT-4o
-with the orchestrator system prompt, and collects properly formatted traces.
-
-Requires: data/train.jsonl (run prepare_data.py first)
+Samples real questions from train_qa.jsonl and train_code.jsonl, sends them
+to GPT-4o with path-pattern-specific prompts, and collects properly formatted
+orchestration traces covering all 6 agent types.
 
 Usage:
     python data_process/prepare_sft.py \
-        --train_data data/train.jsonl \
+        --train_qa data/train_qa.jsonl \
+        --train_code data/train_code.jsonl \
         --output data/sft_warmup.jsonl \
         --api_base https://api.openai.com/v1 \
         --api_key YOUR_KEY \
-        --num_samples 100
+        --num_samples 200
 """
+
+from __future__ import annotations
 
 import argparse
 import json
@@ -47,17 +49,70 @@ Your output MUST follow this exact structure:
 ## Rules
 1. ALWAYS start with <think>
 2. ALWAYS end with <answer>
-3. For simple single-hop factual questions: use ONE executor_cheap call
-4. For multi-hop questions (comparing, connecting facts): use decomposer + multiple executor calls + synthesizer
-5. The <answer> MUST contain the gold answer text
-6. Do NOT include <information> tags — those are injected by the system at runtime
-7. Keep <think> reasoning concise (1-2 sentences)
-8. Keep <answer> concise — just the answer, not a full paragraph"""
+3. The <answer> MUST contain the gold answer text
+4. Do NOT include <information> tags — those are injected by the system at runtime
+5. Keep <think> reasoning concise (1-2 sentences)
+6. Keep <answer> concise — just the answer, not a full paragraph"""
+
+# ── Path patterns: different prompts steer GPT-4o toward specific agent combos
+
+PATH_PATTERNS = {
+    "simple_direct": {
+        "count": 40,
+        "difficulty": "simple",
+        "task_type": "qa",
+        "instruction": "Use ONLY one executor_cheap call. Pattern: think → executor_cheap → answer.",
+    },
+    "refine_then_exec": {
+        "count": 25,
+        "difficulty": "simple",
+        "task_type": "qa",
+        "instruction": "First use refiner to clarify the question, then executor_cheap. Pattern: think → refiner → executor_cheap → answer.",
+    },
+    "strong_direct": {
+        "count": 20,
+        "difficulty": "multi_hop",
+        "task_type": "qa",
+        "instruction": "Use ONLY one executor_strong call for this hard question. Pattern: think → executor_strong → answer.",
+    },
+    "decompose_exec_synth": {
+        "count": 35,
+        "difficulty": "multi_hop",
+        "task_type": "qa",
+        "instruction": "Decompose into subtasks, execute each with executor_cheap, then synthesize. Pattern: think → decomposer → executor_cheap (×2-3) → synthesizer → answer.",
+    },
+    "decompose_strong_critic": {
+        "count": 30,
+        "difficulty": "multi_hop",
+        "task_type": "qa",
+        "instruction": "Decompose, execute with executor_strong, then use critic to verify. Pattern: think → decomposer → executor_strong (×1-2) → critic → answer.",
+    },
+    "full_pipeline": {
+        "count": 20,
+        "difficulty": "multi_hop",
+        "task_type": "qa",
+        "instruction": "Use the full pipeline: decompose, execute with strong, critic finds issue, re-execute, then answer. Pattern: think → decomposer → executor_strong → critic → executor_strong → answer.",
+    },
+    "code_simple": {
+        "count": 15,
+        "difficulty": "code",
+        "task_type": "code",
+        "instruction": "Simple coding task. Use executor_cheap. Pattern: think → executor_cheap → answer. The answer should be the code solution.",
+    },
+    "code_complex": {
+        "count": 15,
+        "difficulty": "code",
+        "task_type": "code",
+        "instruction": "Complex coding task. Decompose, use executor_strong for implementation, critic to verify logic. Pattern: think → decomposer → executor_strong → critic → answer. The answer should be the code solution.",
+    },
+}
 
 USER_TEMPLATE = """Question: {question}
 Gold answer: {answer}
 
-Generate the orchestration trace for this question."""
+PATH INSTRUCTION: {path_instruction}
+
+Generate the orchestration trace following the exact path pattern above."""
 
 
 # ── Format validation ────────────────────────────────────────────────────────
@@ -104,7 +159,7 @@ def extract_agent_types(output: str) -> list[str]:
 # ── Main generation logic ────────────────────────────────────────────────────
 
 def generate_trace(client: OpenAI, model: str, question: str, answer: str,
-                   max_retries: int = 3) -> str | None:
+                   path_instruction: str = "", max_retries: int = 3) -> str | None:
     """Call GPT-4o to generate one orchestration trace. Returns None on failure."""
     # Format gold answer for the prompt
     if isinstance(answer, list):
@@ -112,7 +167,9 @@ def generate_trace(client: OpenAI, model: str, question: str, answer: str,
     else:
         answer_str = str(answer)
 
-    user_msg = USER_TEMPLATE.format(question=question, answer=answer_str)
+    user_msg = USER_TEMPLATE.format(
+        question=question, answer=answer_str, path_instruction=path_instruction
+    )
 
     for attempt in range(max_retries):
         try:
@@ -150,98 +207,141 @@ def generate_trace(client: OpenAI, model: str, question: str, answer: str,
     return None
 
 
-def sample_questions(train_path: str, num_samples: int, seed: int) -> list[dict]:
-    """Sample balanced questions from train.jsonl (50% NQ, 50% HotpotQA)."""
-    by_source = {}
-    with open(train_path, "r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            record = json.loads(line)
-            source = record.get("source", "unknown")
-            by_source.setdefault(source, []).append(record)
+def load_data_pool(qa_path: str, code_path: str | None) -> dict[str, list[dict]]:
+    """Load and categorize training data into pools by difficulty."""
+    pools = {"simple": [], "multi_hop": [], "code": []}
 
-    random.seed(seed)
-    per_source = num_samples // len(by_source)
-    remainder = num_samples - per_source * len(by_source)
+    if Path(qa_path).exists():
+        with open(qa_path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                record = json.loads(line)
+                diff = record.get("difficulty", "simple")
+                if diff in pools:
+                    pools[diff].append(record)
+                else:
+                    pools["simple"].append(record)
 
-    sampled = []
-    for i, (source, records) in enumerate(sorted(by_source.items())):
-        n = per_source + (1 if i < remainder else 0)
-        n = min(n, len(records))
-        sampled.extend(random.sample(records, n))
-        print(f"  Sampled {n} from {source} (pool: {len(records)})")
+    if code_path and Path(code_path).exists():
+        with open(code_path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                record = json.loads(line)
+                pools["code"].append(record)
 
-    random.shuffle(sampled)
-    return sampled
+    for k, v in pools.items():
+        print(f"  Pool '{k}': {len(v)} samples")
+    return pools
+
+
+def sample_for_pattern(pools: dict[str, list], pattern_cfg: dict,
+                       count: int, rng: random.Random) -> list[dict]:
+    """Sample questions matching a path pattern's difficulty requirement."""
+    diff = pattern_cfg["difficulty"]
+    pool = pools.get(diff, [])
+    if not pool:
+        # Fallback: use any pool with data
+        for fallback_diff in ["simple", "multi_hop", "code"]:
+            if pools.get(fallback_diff):
+                pool = pools[fallback_diff]
+                break
+    if not pool:
+        return []
+    n = min(count, len(pool))
+    return rng.sample(pool, n)
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Auto-generate SFT warmup data using GPT-4o"
+        description="Auto-generate SFT warmup data using GPT-4o (200 examples, coverage-aware)"
     )
-    parser.add_argument("--train_data", type=str, default="data/train.jsonl",
-                        help="Path to training JSONL (must exist — run prepare_data.py first)")
+    parser.add_argument("--train_qa",   type=str, default="data/train_qa.jsonl",
+                        help="Path to QA training JSONL")
+    parser.add_argument("--train_code", type=str, default="data/train_code.jsonl",
+                        help="Path to code training JSONL")
     parser.add_argument("--output",     type=str, default="data/sft_warmup.jsonl")
     parser.add_argument("--api_base",   type=str, default="https://api.openai.com/v1")
     parser.add_argument("--api_key",    type=str, required=True)
     parser.add_argument("--model",      type=str, default="gpt-4o",
                         help="Model to use for trace generation")
-    parser.add_argument("--num_samples", type=int, default=100)
+    parser.add_argument("--num_samples", type=int, default=200,
+                        help="Target sample count (default 200, distributed per coverage matrix)")
     parser.add_argument("--seed",       type=int, default=42)
     args = parser.parse_args()
 
-    if not Path(args.train_data).exists():
-        print(f"ERROR: {args.train_data} not found. Run prepare_data.py first.")
-        return
+    rng = random.Random(args.seed)
 
-    # ── Sample questions ──────────────────────────────────────────────────
-    print(f"Sampling {args.num_samples} questions from {args.train_data}...")
-    questions = sample_questions(args.train_data, args.num_samples, args.seed)
-    print(f"  Total sampled: {len(questions)}")
+    # ── Load data pools ───────────────────────────────────────────────────
+    print("Loading data pools...")
+    pools = load_data_pool(args.train_qa, args.train_code)
 
-    # ── Generate traces ───────────────────────────────────────────────────
+    # ── Scale pattern counts to match num_samples ─────────────────────────
+    total_default = sum(p["count"] for p in PATH_PATTERNS.values())
+    scale = args.num_samples / total_default
+
+    # ── Generate per pattern ──────────────────────────────────────────────
     client = OpenAI(base_url=args.api_base, api_key=args.api_key)
-    results = []
+    all_results = []
     agent_type_counts = {}
-    failed = 0
+    pattern_stats = {}  # pattern_name → {generated, failed}
+    global_idx = 0
 
-    print(f"\nGenerating traces with {args.model}...")
-    for i, q in enumerate(questions):
-        question = q["input"]
-        answer = q["answer"]
-        # Deserialize JSON-encoded list answers
-        if isinstance(answer, str) and answer.startswith("["):
-            try:
-                answer = json.loads(answer)
-            except json.JSONDecodeError:
-                pass
+    for pattern_name, pattern_cfg in PATH_PATTERNS.items():
+        target = max(1, round(pattern_cfg["count"] * scale))
+        questions = sample_for_pattern(pools, pattern_cfg, target, rng)
+        instruction = pattern_cfg["instruction"]
 
-        trace = generate_trace(client, args.model, question, answer)
-        if trace is None:
-            failed += 1
-            print(f"  [{i+1}/{len(questions)}] FAILED: {question[:60]}...")
-            continue
+        print(f"\n── Pattern: {pattern_name} (target={target}, sampled={len(questions)}) ──")
+        generated = 0
+        failed = 0
 
-        results.append({"input": question, "output": trace})
+        for i, q in enumerate(questions):
+            question = q["input"]
+            answer = q["answer"]
+            if isinstance(answer, str) and answer.startswith("["):
+                try:
+                    answer = json.loads(answer)
+                except json.JSONDecodeError:
+                    pass
 
-        # Track agent type distribution
-        for agent_type in extract_agent_types(trace):
-            agent_type_counts[agent_type] = agent_type_counts.get(agent_type, 0) + 1
+            trace = generate_trace(client, args.model, question, answer,
+                                   path_instruction=instruction)
+            global_idx += 1
 
-        if (i + 1) % 10 == 0:
-            print(f"  [{i+1}/{len(questions)}] Generated {len(results)} traces ({failed} failed)")
+            if trace is None:
+                failed += 1
+                print(f"  [{global_idx}] FAILED: {question[:50]}...")
+                continue
 
-    # ── Save ──────────────────────────────────────────────────────────────
+            all_results.append({"input": question, "output": trace})
+            generated += 1
+
+            for agent_type in extract_agent_types(trace):
+                agent_type_counts[agent_type] = agent_type_counts.get(agent_type, 0) + 1
+
+            if generated % 10 == 0:
+                print(f"  [{global_idx}] {pattern_name}: {generated}/{target}")
+
+        pattern_stats[pattern_name] = {"generated": generated, "failed": failed, "target": target}
+        print(f"  → {pattern_name}: {generated}/{target} generated ({failed} failed)")
+
+    # ── Shuffle and save ──────────────────────────────────────────────────
+    rng.shuffle(all_results)
+
     Path(args.output).parent.mkdir(parents=True, exist_ok=True)
     with open(args.output, "w", encoding="utf-8") as f:
-        for ex in results:
+        for ex in all_results:
             f.write(json.dumps(ex, ensure_ascii=False) + "\n")
 
     print(f"\n{'='*60}")
-    print(f"Generated {len(results)} SFT examples → {args.output}")
-    print(f"Failed: {failed}")
+    print(f"Generated {len(all_results)} SFT examples → {args.output}")
+    print(f"\nPattern coverage:")
+    for name, stats in pattern_stats.items():
+        print(f"  {name}: {stats['generated']}/{stats['target']} ({stats['failed']} failed)")
     print(f"\nAgent type distribution:")
     for t, c in sorted(agent_type_counts.items(), key=lambda x: -x[1]):
         print(f"  {t}: {c}")

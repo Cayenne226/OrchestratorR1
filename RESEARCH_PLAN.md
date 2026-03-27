@@ -5,6 +5,7 @@
 > **Full paper deadline**: 2026-05-06 AOE
 > **距截稿**: ~6 周（从 2026-03-24 起算）
 > **会议日期**: 2026-12-06 ~ 2026-12-12
+> ⚠️ **2026-03-26 重大更新**: 根据 Conductor 实际信息修正竞争分析和实验方案
 
 ---
 
@@ -14,7 +15,7 @@
 
 | 工作 | 发表 | 方法 | 你的差异点 |
 |------|------|------|-----------|
-| **Conductor** (Nielsen et al.) | ICLR 2026 | 7B 模型 GRPO，plan-then-execute，一次性生成完整 workflow（agent 选择 + prompt + 通信拓扑） | ❶ 你是 reactive（逐步决策），❷ 功能角色而非模型选择，❸ 显式成本优化 |
+| **Conductor** (Nielsen et al.) | ICLR 2026 | Qwen2.5-7B GRPO，plan-then-execute，调度 GPT-5/Claude Sonnet 4/Gemini 2.5 Pro 等 7 个前沿 worker，生成 Python list (model_id + subtask + access_list)，支持递归 self-invocation。**结果: GPQA 87.5%, LCB 83.93%, AIME 93.3%** | ❶ 你是 reactive（逐步决策），❷ 功能角色而非模型选择，❸ 显式成本优化，❹ 不依赖 GPT-5 级 worker |
 | **AgentConductor** (Wang et al.) | arXiv 2602, Feb 2026 | SFT+GRPO，DAG 拓扑演化，密度函数，竞赛级代码生成 | ❶ 你的 agent 是功能异质的（不仅是拓扑差异），❷ 跨模态泛化（QA+推理+代码），❸ reactive 而非 DAG 预规划 |
 | **Router-R1** | NeurIPS 2025 | PPO，单轮路由到 LLM | ❶ 你支持多轮编排，❷ 功能角色而非同质模型选择 |
 | **Agent-R1** | arXiv 2511 | 端到端 RL 训练 agent（tool-use） | ❶ 你是 orchestrator 而非单 agent，❷ 多 agent 协作 |
@@ -22,13 +23,15 @@
 
 ### 风险评估
 
-**高风险**：Conductor 已经是 ICLR 2026 oral/spotlight 级别，NeurIPS reviewer 会直接对比。如果你的实验结果不能 convincingly 证明 reactive > plan-then-execute，论文会被打回。
+**高风险**：Conductor 已经是 ICLR 2026 级别工作，使用 GPT-5/Claude Sonnet 4/Gemini 2.5 Pro 作为 worker，GPQA 87.5%, LiveCodeBench 83.93%, AIME 93.3%。NeurIPS reviewer 会直接对比。
+
+**关键认识**：我们不可能在绝对分数上与 Conductor 竞争（它的 worker 是 GPT-5 级别），必须在**不同维度**上证明价值。
 
 **关键差异化方向（必须至少选 2 个做透）**：
 1. **Reactive 闭环优势**：实验证明中间结果反馈导致策略调整的实例和统计数据
-2. **跨模态泛化**：一个策略同时处理 QA/推理/代码（Conductor 只做推理，AgentConductor 只做代码）
-3. **成本-质量 Pareto 优化**：显式 α 调节 + Pareto 前沿分析
-4. **功能角色涌现**：证明 RL 学会了 task-dependent 的角色调度
+2. **跨模态泛化**：一个策略同时处理 QA/推理/代码（Conductor 只做推理+代码，Router-R1 只做 QA）
+3. **成本-质量 Pareto 优化**：显式 α 调节 + Pareto 前沿分析，强调便宜 worker 也能智能编排
+4. **实际部署性**：不依赖 GPT-5 等前沿模型，训练成本低（单 GPU + GPT-4o-mini API）
 
 ---
 
@@ -40,17 +43,18 @@
 ### One-sentence pitch
 > A small LLM learns to reactively orchestrate functionally specialized agents through end-to-end RL, spontaneously developing adaptive strategies that range from single-step execution to multi-round decomposition-verification pipelines, achieving superior cost-quality tradeoffs across QA, reasoning, and code tasks.
 
-### 核心 Story（reviewers 角度）
+### 核心 Story（reviewers 角度）— 修订版
 
 **What's wrong with the world?**
 - Router-R1 只能路由到单一模型，无法分解/验证/综合
-- Conductor 一次性生成完整 workflow，无法根据中间结果调整策略
+- Conductor 一次性生成完整 workflow，无法根据中间结果调整策略；且依赖 GPT-5 级前沿 worker，部署成本极高
 - AgentConductor 限于代码任务，且 DAG 拓扑是静态的
 - AutoGen/CrewAI 需要人工设计流程
 
 **What do you do?**
 - 将 multi-agent orchestration 建模为 MDP
 - Orchestrator 逐步观察 agent 返回、逐步决策（reactive）
+- 使用**廉价、功能化** worker（非前沿模型），通过智能编排最大化性价比
 - 单一 GRPO 奖励函数驱动，涌现自适应行为谱
 - 跨 QA/推理/代码三个模态泛化
 
@@ -58,13 +62,16 @@
 - Reactive 闭环 > 开环规划：可以根据 agent 返回质量临时调整后续动作
 - 功能角色 > 模型选择：不同 agent 执行不同认知功能（分解、验证、综合）
 - 成本感知奖励 > 忽略成本：α 调节 Pareto 前沿
+- 不依赖前沿 worker：用 GPT-4o-mini 也能做智能编排
 
 **What's the evidence?**
-- Table 1: 三个 track 超越 Router-R1/Conductor/Direct-Strong/ReAct
+- Table 1: 三个 track × 10 benchmarks — 唯一全覆盖方法
+- Table 2: 闭环 vs 开环 controlled experiment — reactive 的结构性优势
 - Figure: Agent 调用分布热力图（涌现自适应性）
 - Figure: 训练过程行为变化（RL 驱动涌现）
-- Figure: Pareto 曲线（成本-质量权衡）
-- Case study: Reactive 策略调整实例（Conductor 无法做到）
+- Figure: Pareto 曲线（成本-质量权衡，标注 Conductor 为"高成本高质量"参考点）
+- Case study: Reactive 策略调整实例（Conductor 范式无法实现）
+- Table (Appendix): 与 Conductor 共有 benchmark 的对比（诚实展示差距，解释 worker 差异）
 
 ---
 
@@ -78,19 +85,26 @@
 | Track 2: 多跳推理 | HotpotQA, 2WikiMultihop, MuSiQue, Bamboogle | F1 | 各 500 |
 | Track 3: 代码 | HumanEval, MBPP | Pass@1 | 164 + 427 |
 
-### 2.2 基线（必须覆盖，否则 reviewer 会要求补）
+### 2.2 基线（修订版 — 双配置策略）
+
+> **核心策略**: 训练用 cheap worker，测试同时评估 matched（前沿）和 cheap（廉价）两种 worker 配置。
+
+> **Conductor 论文的基线**: RouterDC, Smoothie, MASRouter, MoA, 5-turn Self-Reflection, Single-best worker
 
 | 基线 | 优先级 | 来源 | 说明 |
 |------|--------|------|------|
-| **Conductor** | ★★★ 最高 | 复现或用官方 checkpoint | ICLR 2026，必须直接对比 |
-| **Router-R1** | ★★★ | 官方 checkpoint | 直接前作 |
-| **Direct-GPT-4o** | ★★☆ | 直接调 API | 上限参考 |
+| **Conductor** (matched worker) | ★★★ 最高 | 引用论文数据 | GPQA/LCB 上正面对标（同等 worker 池） |
+| **Router-R1** | ★★★ | 官方 checkpoint | 直接前作，QA 任务核心对比 |
+| **Direct-GPT-4o** | ★★★ | 直接调 API | ✅ **已完成**。上限参考 |
+| **Self-Reflection 5-turn** | ★★★ | 自实现 | Conductor 论文中的重要基线 |
 | **ReAct** (Qwen2.5-3B) | ★★☆ | 自实现 | 标准 tool-use 基线 |
-| **AgentConductor** | ★★☆ | 复现或引用数据 | 代码 track 直接竞品 |
+| **Ours (matched worker)** | ★★★ | 自评估 | Agent pool 对齐 Conductor（GPT-5/Claude/Gemini 等），正面对标 |
+| **Ours (cheap worker)** | ★★★ | 自评估 | Agent pool 用 GPT-4o-mini/GPT-4o，展示成本效率 |
+| **AgentConductor** | ★☆☆ | 引用论文数据 | 代码 track 引用 |
+| **MoA** | ★☆☆ | 可选实现 | 在 QA 上实现 |
 | **Fixed-Pipeline** | ★★☆ | 自实现 | 消融：固定 6 步流水线 |
-| **Reflexion** | ★☆☆ | 自实现 | 可选 |
 
-> **关键**：如果无法复现 Conductor，至少要在论文中定性对比（reactive vs plan-then-execute），并在 HotpotQA/GPQA 等 Conductor 报告了结果的数据集上做对比。
+> **策略**: RouterDC/Smoothie/MASRouter 等 Conductor 基线在 Related Work 中讨论并引用数据，不自己复现。
 
 ### 2.3 消融实验
 
@@ -116,16 +130,30 @@
 | Reactive 策略调整 | Case study × 3 | 展示中间反馈→策略修正的具体实例 |
 | Scaling | 3B vs 7B | 模型规模对编排能力的影响 |
 
-### 2.5 预期结果（诚实评估）
+### 2.5 预期结果（双配置策略）
 
-| Track | vs Router-R1 | vs Conductor | vs Direct-GPT-4o |
-|-------|-------------|--------------|-------------------|
-| 简单 QA | 平手或 +1~3% F1，成本更低 | 可能略低（Conductor 用 70B workers）| 略低，但成本 1/10 |
-| 多跳推理 | +5~10% F1（分解+验证优势） | 需要实验验证 | 接近或略低 |
-| 代码 | Router-R1 不支持 | AgentConductor 更强，但你跨模态 | 可能略低 |
+**Matched-worker 配置（Agent pool = GPT-5/Claude Sonnet 4/Gemini 2.5 Pro 等）**:
 
-**如果 Conductor 全面碾压你怎么办？**
-→ 转向强调 (1) 跨模态泛化 (2) 成本效率 (3) 训练效率（单 GPU 可训，$5 API），定位为 "practical, cost-efficient alternative"
+| Track | vs Conductor (same workers) | 预期 |
+|-------|-----------------------------|------|
+| GPQA | 正面对标 87.5% | **接近或超过** — reactive 闭环在困难推理题上有 critic→retry 优势 |
+| LiveCodeBench | 正面对标 83.93% | **接近** — 代码题可能更依赖 worker 本身能力 |
+| QA/多跳推理 | Conductor 无此数据 | **我们独有** — 展示跨模态泛化 |
+
+**Cheap-worker 配置（Agent pool = GPT-4o-mini/GPT-4o）**:
+
+| Track | vs Router-R1 | vs Direct-GPT-4o |
+|-------|-------------|-------------------|
+| 简单 QA | 平手或 +1~3% F1，成本更低 | 略低，但成本 1/10 |
+| 多跳推理 | +5~10% F1（分解+验证优势） | 接近或略低 |
+| 代码 | Router-R1 不支持 | 可能略高（编排优势） |
+| GPQA | Router-R1 不支持 | 持平或略高 |
+
+**核心叙事**:
+> "Under matched worker conditions, OrchestratorR1's reactive paradigm achieves comparable or superior results to Conductor's open-loop approach (Table 1), while additionally covering QA and multi-hop reasoning tasks (Table 2). With cost-efficient workers, OrchestratorR1 provides explicit Pareto optimization (Figure X), enabling deployment at 10-50× lower cost."
+
+**风险点**: matched-worker 下 zero-shot transfer 可能有 gap（训练用 cheap worker，测试用 matched worker）。
+**应对**: 如果 gap 明显，用 matched worker 做少量 fine-tune（几百步 GRPO），或直接用 matched worker 训练一个版本。
 
 ---
 
@@ -133,10 +161,12 @@
 
 ### 3.1 必做（P0，影响审稿结论）
 
-- [ ] **实现 "w/o reactive" 消融**：让模型一次性输出所有 call（不注入中间 information），对比 reactive 模式
-- [ ] **添加 GPQA 数据集**：Conductor 的核心评估数据集，必须覆盖以便直接对比
-- [ ] **添加 LiveCodeBench**：Conductor 和 AgentConductor 都用了，代码 track 的标准基准
-- [ ] **Conductor 基线**：至少在 2-3 个数据集上复现或引用其结果
+- [ ] **实现 "w/o reactive" 消融**：让模型一次性输出所有 call（不注入中间 information），对比 reactive 模式 → ✅ OpenLoopGenerationManager 已实现
+- [ ] **Matched-worker Agent Pool 配置**：实现可切换的 worker pool（cheap: GPT-4o-mini/GPT-4o, matched: GPT-5/Claude Sonnet 4/Gemini 2.5 Pro 等），支持运行时切换
+- [ ] **添加 GPQA 数据集**：✅ 已完成（198 条）
+- [ ] **添加 LiveCodeBench**：✅ 已完成（202 条）
+- [ ] **Self-Reflection 5-turn 基线**：实现并在全部数据集上评估
+- [ ] **Conductor matched-worker 正面对标**：在 GPQA/LiveCodeBench 上用相同 worker pool 对比
 - [ ] **统计显著性**：所有结果报告 3 次独立 seed 的 mean ± std
 
 ### 3.2 应做（P1，显著提升论文质量）
@@ -166,8 +196,8 @@ Abstract (250 words)
 
 1. Introduction (1.5 pages)
    - Multi-agent systems 的局限（手工设计 vs 端到端学习）
-   - Router-R1 → Conductor 的进展，但 plan-then-execute 的局限
-   - 本文: reactive sequential orchestration + 跨模态 + 成本优化
+   - Router-R1 → Conductor 的进展，及各自的局限（开环规划、依赖前沿 worker）
+   - 本文: reactive sequential orchestration + 跨模态 + 成本优化 + 廉价 worker
    - Contributions (3 条)
 
 2. Related Work (1 page)
@@ -186,9 +216,10 @@ Abstract (250 words)
 
 4. Experiments (3 pages)
    4.1 Setup (datasets, baselines, metrics, hyperparameters)
-   4.2 Main Results (Table 1: 3 tracks × baselines × 4 metrics)
-   4.3 Ablation Studies (Table 2: 7 ablations)
-   4.4 Cost-Quality Tradeoff (Pareto curve)
+   4.2 Main Results (Table 1: cross-modal, 10 benchmarks × baselines — 不含 Conductor)
+   4.3 Comparison with Conductor (Table 2: shared benchmarks, 诚实对比 + worker 差异分析)
+   4.4 Ablation Studies (Table 3: 7 ablations, 重点: reactive vs open-loop)
+   4.5 Cost-Quality Tradeoff (Pareto curve, 标注 Conductor 为高成本参考点)
 
 5. Analysis (1.5 pages)
    5.1 Emergent Adaptive Behavior (heatmap + training dynamics)
@@ -199,10 +230,11 @@ Abstract (250 words)
 
 Appendix:
    A. Agent System Prompts
-   B. Full Evaluation Results per Dataset
-   C. Training Details and Hyperparameters
-   D. Additional Case Studies
-   E. Compute Cost Analysis
+   B. Matched-Condition Comparison with Router-R1 (Table A1: same data, architecture-only diff)
+   C. Full Evaluation Results per Dataset
+   D. Training Details and Hyperparameters
+   E. Additional Case Studies
+   F. Compute Cost Analysis
 ```
 
 **页数**: 主文 10 页 + references + appendix（符合 NeurIPS 格式）
@@ -293,7 +325,8 @@ Appendix:
 | 风险 | 概率 | 应对 |
 |------|------|------|
 | GRPO 训练不收敛 | 中 | 增加 SFT 热身数据到 200 条；调低 lr；先用 LoRA 快速验证 |
-| Conductor 全面碾压 | 中高 | 强调跨模态 + 成本效率 + 训练效率（$5 vs $$$）|
+| Conductor 绝对分数碾压 | **确定** | ⚠️ Conductor 用 GPT-5 级 worker，87.5% GPQA。定位为不同范式+成本效率+跨模态，完全避开数字战 |
+| Reviewer 要求 vs Conductor 对比 | 高 | 准备: (1) worker 成本分析 (2) 闭环 vs 开环 controlled experiment (3) 跨模态覆盖度 |
 | API 调用预算超支 | 低 | 训练阶段全用 gpt-4o-mini；限制 max_turns=4 |
 | 7B 模型显存不够 | 中 | 用 LoRA + gradient checkpointing；或只报 3B 结果 + 附录 7B |
 | 6 周写不完 | 中 | 优先保证 Table 1 (主结果) + Figure 2 (热力图) + 1 个消融，其余可精简 |
@@ -325,20 +358,21 @@ Appendix:
 
 ## 8. 与 Conductor/AgentConductor 的差异化论述模板
 
-### vs Conductor（最重要的对比）
+### vs Conductor（最重要的对比）— 双配置策略
 
-> While the Conductor (Nielsen et al., 2026) generates complete workflows in a single forward pass,
-> OrchestratorR1 adopts a **reactive sequential** paradigm: the orchestrator observes each agent's
-> response before deciding the next action. This closed-loop formulation enables:
-> (1) **real-time strategy adaptation** — if an executor returns low-quality results, the orchestrator
-> can dynamically invoke a critic for verification and retry;
-> (2) **cost-aware early stopping** — simple queries are answered in 1 step without generating
-> unnecessary workflow overhead;
-> (3) **functional role orchestration** — rather than selecting which model to invoke, our agents
-> perform distinct cognitive functions (decomposition, verification, synthesis).
+> While the Conductor (Nielsen et al., 2026) achieves remarkable results (87.5% GPQA, 83.9% LiveCodeBench)
+> by orchestrating frontier models (GPT-5, Claude Sonnet 4, Gemini 2.5 Pro) in a plan-then-execute paradigm,
+> OrchestratorR1 adopts a **reactive sequential** paradigm with **functionally specialized** agents.
 >
-> Furthermore, a single OrchestratorR1 policy generalizes across QA, multi-hop reasoning, and code
-> generation, whereas Conductor focuses exclusively on reasoning tasks.
+> Under matched worker conditions (Table 1), OrchestratorR1 achieves comparable or superior results,
+> demonstrating that the reactive paradigm is at least as effective as open-loop planning when given
+> the same worker capabilities. We further show three structural advantages:
+> (1) **closed-loop error recovery** — when an agent returns incorrect results, the orchestrator
+> dynamically invokes a critic for verification and retries (Table X: Y% recovery rate vs Conductor's 0%);
+> (2) **cross-modal generalization** — a single policy handles QA, multi-hop reasoning, and code tasks
+> across 10 benchmarks, while Conductor focuses on reasoning and code;
+> (3) **cost-adaptive orchestration** — with cost-efficient workers (GPT-4o-mini), OrchestratorR1 provides
+> explicit Pareto optimization (Figure X), enabling deployment at 10-50× lower cost.
 
 ### vs AgentConductor
 

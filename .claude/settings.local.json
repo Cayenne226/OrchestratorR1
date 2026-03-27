@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -c \"import sys,json; d=json.loads\\(sys.stdin.readline\\(\\)\\); print\\(list\\(d.keys\\(\\)\\)\\); print\\(''''source:'''', d.get\\(''''source'''',''''''''\\), ''''difficulty:'''', d.get\\(''''difficulty'''',''''''''\\)\\)\")",
+      "Bash(python:*)"
+    ]
+  }
+}
