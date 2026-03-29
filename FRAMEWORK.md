@@ -42,7 +42,7 @@
 
 ```
 简单事实题:    think → executor_cheap → answer                        (1 轮)
-模糊描述:      think → refiner → executor_cheap → answer              (2 轮)
+隐含引用:      think → refiner → executor_cheap → answer              (2 轮)
 多跳推理:      think → decomposer → executor×N → synthesizer → answer (3~5 轮)
 复杂代码:      think → decomposer → executor_strong×N → critic → answer(4~6 轮)
 ```

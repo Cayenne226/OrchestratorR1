@@ -37,7 +37,7 @@ GENERATION_SYSTEM_PROMPT = """You are a training data generator. Given a user qu
 - decomposer: For multi-hop questions that need to be broken into subtasks
 - synthesizer: For combining results from multiple agent calls
 - critic: For verifying quality of a result
-- refiner: For clarifying vague input (rarely needed for QA tasks)
+- refiner: For rewriting queries with implicit references to improve retrieval accuracy
 
 ## Required Format
 Your output MUST follow this exact structure:
@@ -67,7 +67,7 @@ PATH_PATTERNS = {
         "count": 25,
         "difficulty": "simple",
         "task_type": "qa",
-        "instruction": "First use refiner to clarify the question, then executor_cheap. Pattern: think → refiner → executor_cheap → answer.",
+        "instruction": "First use refiner to rewrite the query for better retrieval, then executor_cheap. Pattern: think → refiner → executor_cheap → answer.",
     },
     "strong_direct": {
         "count": 20,

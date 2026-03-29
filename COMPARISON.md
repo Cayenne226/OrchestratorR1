@@ -94,7 +94,7 @@
 3. 成本可控 → 简单题不需要调大 LLM
 
 **你对它的劣势**:
-- Prompt-R1 的 prompt 优化能力可能比你的 refiner agent 更强（它整个训练目标就是 prompt 优化）
+- Prompt-R1 的 prompt 优化能力可能比你的 refiner (query rewriter) agent 更强（它整个训练目标就是 prompt 优化）
 - 接入门槛更低（只需一个 API）
 
 ---

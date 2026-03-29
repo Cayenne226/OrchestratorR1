@@ -1,7 +1,7 @@
 Contributions
 Our main contributions are as follows:
 
-We formulate multi-agent orchestration as a learnable RL problem. We propose a unified MDP framework where a small LLM acts as an orchestrator over a pool of functionally specialized agents (refiner, decomposer, executor, critic, synthesizer). Unlike prior routing approaches that select which model to query, our formulation enables the orchestrator to decide what functional action to take at each step—including task decomposition, input refinement, intermediate verification, and result synthesis—within a coherent sequential decision process. To our knowledge, this is the first work to train an end-to-end RL policy for multi-agent orchestration, bridging the gap between LLM routing (Router-R1) and hand-engineered multi-agent systems (AutoGen, CrewAI).
+We formulate multi-agent orchestration as a learnable RL problem. We propose a unified MDP framework where a small LLM acts as an orchestrator over a pool of functionally specialized agents (refiner, decomposer, executor, critic, synthesizer). Unlike prior routing approaches that select which model to query, our formulation enables the orchestrator to decide what functional action to take at each step—including task decomposition, query rewriting for better retrieval, intermediate verification, and result synthesis—within a coherent sequential decision process. To our knowledge, this is the first work to train an end-to-end RL policy for multi-agent orchestration, bridging the gap between LLM routing (Router-R1) and hand-engineered multi-agent systems (AutoGen, CrewAI).
 
 We demonstrate that adaptive orchestration strategies emerge from end-to-end RL with a single reward function. Through GRPO training with a composite reward balancing answer quality, API cost, and turn efficiency, the orchestrator spontaneously develops a spectrum of task-dependent behaviors: simple queries trigger single-step execution, while complex queries activate multi-step decomposition-execution-verification-synthesis pipelines. This emergent adaptivity—validated through agent call distribution heatmaps and training dynamics analysis—stands in contrast to both fixed-pipeline approaches and routing methods that lack functional differentiation across invocations.
 
@@ -22,7 +22,7 @@ RL-Learned Agent Orchestration. Recent work has demonstrated that reinforcement 
 贡献
 本文的主要贡献如下：
 
-将多 Agent 编排建模为可学习的强化学习问题。 我们提出一个统一 MDP 框架，由一个小型 LLM 作为编排器，调度一组功能专业化的 Agent（refiner、decomposer、executor、critic、synthesizer）。与仅选择"向哪个模型提问"的路由方法不同，我们的框架使编排器能够在每一步决策"执行何种功能动作"——包括任务分解、输入精化、中间验证和结果综合——形成连贯的序列决策过程。据我们所知，这是首个通过端到端 RL 训练多 Agent 编排策略的工作，填补了 LLM 路由（Router-R1）与手工设计多 Agent 系统（AutoGen、CrewAI）之间的空白。
+将多 Agent 编排建模为可学习的强化学习问题。 我们提出一个统一 MDP 框架，由一个小型 LLM 作为编排器，调度一组功能专业化的 Agent（refiner、decomposer、executor、critic、synthesizer）。与仅选择"向哪个模型提问"的路由方法不同，我们的框架使编排器能够在每一步决策"执行何种功能动作"——包括任务分解、查询重写优化检索、中间验证和结果综合——形成连贯的序列决策过程。据我们所知，这是首个通过端到端 RL 训练多 Agent 编排策略的工作，填补了 LLM 路由（Router-R1）与手工设计多 Agent 系统（AutoGen、CrewAI）之间的空白。
 
 证明自适应编排策略可在单一奖励函数驱动的端到端 RL 中自发涌现。 通过以答案质量、API 成本和交互效率为综合目标的 GRPO 训练，编排器自发形成任务依赖型的行为谱：简单查询触发单步执行，复杂查询激活分解-执行-验证-综合的多步流水线。这一涌现自适应性通过 Agent 调用分布热力图和训练动态分析得到可视化验证，与固定流水线方法及缺乏功能分工的路由方法形成鲜明对比。
 
