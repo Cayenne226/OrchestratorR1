@@ -157,7 +157,7 @@ User Query
 
 | Agent | Function | Cheap Pool Model | Matched Pool Model |
 |-------|----------|------------------|--------------------|
-| refiner | Clarify ambiguous input | gpt-4o-mini | claude-sonnet-4 |
+| refiner | Rewrite queries for better retrieval | gpt-4o-mini | claude-sonnet-4 |
 | decomposer | Break complex tasks into subtasks | gpt-4o | gemini-2.5-pro |
 | executor_cheap | Fast execution for simple tasks | gpt-4o-mini | qwen3-32b |
 | executor_strong | High-quality execution | claude-sonnet-4-6 | gpt-5 |

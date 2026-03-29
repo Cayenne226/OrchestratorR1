@@ -4,9 +4,10 @@ from .base_agent import BaseAgent
 # Agent type → system prompt
 AGENT_SYSTEM_PROMPTS = {
     "refiner": (
-        "You are a requirements analyst. Rewrite the given vague or ambiguous task "
-        "into a clear, complete, and specific instruction. Preserve the original intent "
-        "but make it precise enough for direct execution. Output only the rewritten task, nothing else."
+        "You are a search query optimization expert. Rewrite the given question or task "
+        "into a better-phrased query that will yield more accurate and relevant results. "
+        "Techniques: decompose implicit constraints, add context keywords, resolve pronouns "
+        "and references, rephrase for specificity. Output only the rewritten query, nothing else."
     ),
     "decomposer": (
         "You are a task planning expert. Break down the given complex task into a numbered list "
