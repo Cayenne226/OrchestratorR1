@@ -5,9 +5,10 @@ checkpoints/
 *.bin
 *.pt
 
-# Data (large files)
-data/*.jsonl
+# Data (large files - keep .jsonl tracked)
+# data/*.jsonl
 data/*.parquet
+data/test_livecode.jsonl
 
 # Evaluation results
 eval/results/
