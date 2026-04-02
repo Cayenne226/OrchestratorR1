@@ -7,7 +7,7 @@ model directly, without any multi-agent orchestration.
 Usage:
     python eval/run_direct_gpt4o.py \
         --data_paths data/test_qa.jsonl data/test_code.jsonl data/test_gpqa.jsonl data/test_livecode.jsonl \
-        --api_base "http://35.220.164.252:3888/v1/" \
+        --api_base "YOUR_API_BASE" \
         --api_key "YOUR_KEY" \
         --output eval/results/direct_gpt4o.json \
         --model gpt-4o \
@@ -136,9 +136,9 @@ def main():
     parser.add_argument("--data_paths", nargs="+", required=True,
                         help="Paths to test JSONL files")
     parser.add_argument("--api_base", type=str,
-                        default="http://35.220.164.252:3888/v1/")
+                        default="YOUR_API_BASE")
     parser.add_argument("--api_key", type=str,
-                        default="sk-YlG8W7NPhqBSb3WIgsDJl7xekcBoUuAI8YE1kNtF3UY48ITM")
+                        default="YOUR_API_KEY")
     parser.add_argument("--model", type=str, default="gpt-4o")
     parser.add_argument("--output", type=str, required=True)
     parser.add_argument("--max_samples", type=int, default=None,

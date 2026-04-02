@@ -1,36 +1,34 @@
 #!/bin/bash
-# Orchestrator-R1 Training Script with GPU Selection
+# Orchestrator-R1 GRPO Training Script with GPU Selection
 # Usage:
-#   4x A100 80GB (LoRA):       bash training/train_flex.sh --gpu a100 --lora
-#   4x A100 80GB (Full FT):    bash training/train_flex.sh --gpu a100
-#   4x RTX 3090 (LoRA):        bash training/train_flex.sh --gpu 3090 --lora
-#   4x RTX 3090 (Full FT):     bash training/train_flex.sh --gpu 3090
+#   4x RTX 3090 (7B LoRA, recommended):  bash training/train_flex.sh --lora
+#   4x RTX 3090 (3B Full FT):            bash training/train_flex.sh
+#   4x A100 80GB (7B LoRA):              bash training/train_flex.sh --gpu a100 --lora
+#   4x A100 80GB (7B Full FT):           bash training/train_flex.sh --gpu a100
 
 export TOKENIZERS_PARALLELISM=false
 export PYTHONPATH=$(dirname "$0")/..
 
 # ── API credentials ────────────────────────────────────────────────────────
-API_BASE=${API_BASE:-"http://35.220.164.252:3888/v1/"}
-API_KEY=${API_KEY:-"sk-YlG8W7NPhqBSb3WIgsDJl7xekcBoUuAI8YE1kNtF3UY48ITM"}
+API_BASE=${API_BASE:}
+API_KEY=${API_KEY:}
 
 # ── Parse arguments ────────────────────────────────────────────────────────
 GPU_TYPE="3090"  # default
 USE_LORA=false
-EXTRA_ARGS=""
 
-for arg in "$@"; do
-    case "$arg" in
+while [[ $# -gt 0 ]]; do
+    case "$1" in
         --gpu)
-            shift
-            GPU_TYPE="$1"
-            shift
+            GPU_TYPE="$2"
+            shift 2
             ;;
         --lora)
             USE_LORA=true
             shift
             ;;
         *)
-            EXTRA_ARGS="$EXTRA_ARGS $arg"
+            shift
             ;;
     esac
 done
@@ -60,9 +58,9 @@ if [ "$GPU_TYPE" = "a100" ]; then
     fi
 else
     echo "=== RTX 3090 Mode: 4x RTX 3090 24GB ==="
-    MODEL_PATH=${MODEL_PATH:-"models/Qwen2.5-3B-Instruct"}
     if [ "$USE_LORA" = true ]; then
-        echo "    Training: 3B LoRA"
+        echo "    Training: 7B LoRA"
+        MODEL_PATH=${MODEL_PATH:-"models/Qwen2.5-7B-Instruct"}
         ACCEL_CONFIG="training/accelerate_fsdp_4gpu_lora.yaml"
         BATCH_SIZE=2
         GRAD_ACCUM=8
@@ -70,6 +68,7 @@ else
         LORA_FLAG="--use_lora --lora_r 64 --lora_alpha 128"
     else
         echo "    Training: 3B Full Fine-Tuning"
+        MODEL_PATH=${MODEL_PATH:-"models/Qwen2.5-3B-Instruct"}
         ACCEL_CONFIG="training/accelerate_fsdp_4gpu.yaml"
         BATCH_SIZE=2
         GRAD_ACCUM=8
@@ -106,5 +105,4 @@ accelerate launch \
     --beta 0.1 \
     --gamma 0.15 \
     --metric f1 \
-    $LORA_FLAG \
-    $EXTRA_ARGS
+    $LORA_FLAG
