@@ -30,12 +30,25 @@ from tqdm import tqdm
 
 from orchestrator_r1.agent_pool.agent_registry import AgentRegistry
 from orchestrator_r1.orchestrator.reward import compute_em, compute_f1
+from eval.metrics import compute_metric
+
+# Suffix appended to every baseline query to elicit short answers,
+# matching the concise style that OrchestratorR1 produces via <answer> tags.
+SHORT_ANSWER_SUFFIX = "\n\nAnswer with only the short factual answer, nothing else."
+
+
+def _is_code_task(record: dict) -> bool:
+    """Check if this record is a code task (should not append short-answer suffix)."""
+    source = record.get("source", "")
+    difficulty = record.get("difficulty", "")
+    return source in ("humaneval", "mbpp", "livecodebench") or difficulty.startswith("code")
 
 
 def eval_direct_strong(record: dict, registry: AgentRegistry) -> dict:
     """Baseline: Send query directly to strong model, no orchestration."""
     question = record["input"]
-    response, cost = registry.dispatch("executor_strong", question)
+    suffix = "" if _is_code_task(record) else SHORT_ANSWER_SUFFIX
+    response, cost = registry.dispatch("executor_strong", question + suffix)
 
     return {
         "pred": response.strip(),
@@ -45,9 +58,25 @@ def eval_direct_strong(record: dict, registry: AgentRegistry) -> dict:
     }
 
 
+def eval_direct_cheap(record: dict, registry: AgentRegistry) -> dict:
+    """Baseline: Send query directly to cheap model, no orchestration."""
+    question = record["input"]
+    suffix = "" if _is_code_task(record) else SHORT_ANSWER_SUFFIX
+    response, cost = registry.dispatch("executor_cheap", question + suffix)
+
+    return {
+        "pred": response.strip(),
+        "n_turns": 1,
+        "total_cost": cost,
+        "agent_calls": [{"agent_type": "executor_cheap", "cost": cost}],
+    }
+
+
 def eval_fixed_pipeline(record: dict, registry: AgentRegistry) -> dict:
     """Baseline: Always run the full 6-step pipeline regardless of task complexity."""
     question = record["input"]
+    is_code = _is_code_task(record)
+    suffix = "" if is_code else SHORT_ANSWER_SUFFIX
     agent_calls = []
     total_cost = 0.0
 
@@ -62,7 +91,7 @@ def eval_fixed_pipeline(record: dict, registry: AgentRegistry) -> dict:
     total_cost += cost
 
     # Step 3: Executor (strong, on the refined+decomposed task)
-    exec_query = f"Based on this plan: {plan}\n\nAnswer the original question: {question}"
+    exec_query = f"Based on this plan: {plan}\n\nAnswer the original question: {question}{suffix}"
     result, cost = registry.dispatch("executor_strong", exec_query)
     agent_calls.append({"agent_type": "executor_strong", "cost": cost})
     total_cost += cost
@@ -75,13 +104,22 @@ def eval_fixed_pipeline(record: dict, registry: AgentRegistry) -> dict:
 
     # Step 5: Executor again if critic found issues
     if any(w in feedback.lower() for w in ["incorrect", "incomplete", "missing", "wrong"]):
-        retry_query = f"Original question: {question}\nPrevious answer: {result}\nFeedback: {feedback}\nPlease provide a corrected answer."
+        retry_query = f"Original question: {question}\nPrevious answer: {result}\nFeedback: {feedback}\nPlease provide a corrected answer.{suffix}"
         result, cost = registry.dispatch("executor_strong", retry_query)
         agent_calls.append({"agent_type": "executor_strong", "cost": cost})
         total_cost += cost
 
     # Step 6: Synthesizer
-    synth_query = f"Question: {question}\nAnswer: {result}\n\nProvide a clean, final answer."
+    if is_code:
+        synth_query = f"Question: {question}\nCode: {result}\n\nCombine into a clean, final solution. Output only the code, nothing else."
+    else:
+        synth_query = (
+            f"Question: {question}\n"
+            f"Context: {result}\n\n"
+            f"Based on the context above, what is the answer to the question? "
+            f"Reply with ONLY the answer entity (a name, number, date, or short phrase). "
+            f"No explanation, no full sentences."
+        )
     final, cost = registry.dispatch("synthesizer", synth_query)
     agent_calls.append({"agent_type": "synthesizer", "cost": cost})
     total_cost += cost
@@ -96,6 +134,7 @@ def eval_fixed_pipeline(record: dict, registry: AgentRegistry) -> dict:
 
 METHODS = {
     "direct_strong": eval_direct_strong,
+    "direct_cheap": eval_direct_cheap,
     "fixed_pipeline": eval_fixed_pipeline,
 }
 
@@ -132,8 +171,9 @@ def main():
         gold = record["answer"]
         pred = output["pred"]
 
-        em = compute_em(pred, gold)
-        f1 = compute_f1(pred, gold)
+        metrics = compute_metric(pred, record)
+        em = metrics.get("em", 0.0)
+        f1 = metrics.get("f1", 0.0)
         total_em += em
         total_f1 += f1
         total_cost += output["total_cost"]
@@ -145,6 +185,7 @@ def main():
             "pred": pred,
             "em": em,
             "f1": f1,
+            "metrics": metrics,
             "n_turns": output["n_turns"],
             "total_cost": output["total_cost"],
             "agent_calls": output["agent_calls"],
