@@ -25,6 +25,7 @@ Usage:
 
 import argparse
 import json
+import time
 from pathlib import Path
 from tqdm import tqdm
 
@@ -164,10 +165,13 @@ def main():
 
     # Evaluate
     results = []
-    total_em = total_f1 = total_cost = total_turns = 0.0
+    total_em = total_f1 = total_cost = total_turns = total_latency = 0.0
 
     for record in tqdm(records, desc=f"Eval {args.method}"):
+        t0 = time.time()
         output = eval_fn(record, registry)
+        latency_sec = time.time() - t0
+        total_latency += latency_sec
         gold = record["answer"]
         pred = output["pred"]
 
@@ -189,6 +193,7 @@ def main():
             "n_turns": output["n_turns"],
             "total_cost": output["total_cost"],
             "agent_calls": output["agent_calls"],
+            "latency_sec": round(latency_sec, 3),
             "source": record.get("source", ""),
         })
 
@@ -200,6 +205,7 @@ def main():
         "f1": total_f1 / n if n > 0 else 0,
         "avg_cost_usd": total_cost / n if n > 0 else 0,
         "avg_turns": total_turns / n if n > 0 else 0,
+        "avg_latency_sec": total_latency / n if n > 0 else 0,
     }
 
     print("\n=== Baseline Results ===")

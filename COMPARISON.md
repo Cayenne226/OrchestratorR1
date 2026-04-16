@@ -518,34 +518,65 @@ GRPO 训练:
 
 ---
 
-## 7. Reviewer 会问的问题（预判 + 准备回答）— 修订版
+## 7. Reviewer 会问的问题（预判 + 准备回答）— 第二次修订
 
-### Q1: "Why not just use Conductor? It already achieves SOTA on GPQA/LiveCodeBench."
-**A**: Table 1 shows that under **matched worker conditions** (same frontier models), OrchestratorR1 achieves comparable or superior results to Conductor, while additionally supporting QA and multi-hop reasoning tasks that Conductor does not cover. Moreover, our reactive paradigm provides error recovery (Table X: Y% vs 0%) and cost-adaptive early stopping that open-loop planning cannot.
+> ⚠️ **2026-04-16 修订**: 基于 contributions 重构、延迟成本分析、think 分析的新增讨论，全面更新 Q&A。
+
+### Q1: "Why not just use Conductor? It already achieves SOTA."
+**A**: We address a **different research question** than Conductor. Conductor demonstrated that RL can learn open-loop workflow generation — impressive results. We ask: **"Is closed-loop feedback necessary for multi-agent orchestration?"** Our adversarial experiments (Table 1) provide a definitive answer: at 30% intermediate failure rate, reactive orchestration retains X% of clean performance vs. Y% for open-loop. This robustness gap cannot be addressed within the open-loop paradigm. Additionally, we cover 10 benchmarks including QA and multi-hop reasoning that Conductor does not address.
 
 ### Q2: "Your numbers on GPQA/LiveCodeBench are much lower than Conductor's."
-**A**: Our Table 1 (matched-worker) shows results **under the same worker pool as Conductor** — where we achieve X% GPQA vs Conductor's 87.5%. Table 2 additionally shows results with cost-efficient workers (GPT-4o-mini) at 10-50× lower cost per query, demonstrating the practical applicability of our approach.
+**A**: Table 3 (matched-worker) shows results **under the same worker pool as Conductor**. Any remaining gap on cheap-worker Table 2 reflects worker quality, not orchestration capability. 我们不在 cheap pool 数字上和 Conductor 比——那是不同量级的 worker。
 
-### Q3: "Conductor also uses RL (GRPO) and orchestrates multiple agents. What's novel about your approach?"
-**A**: 关键区别在编排**范式**：
-- Conductor: plan-then-execute（一次性输出完整 workflow，然后执行）
-- OrchestratorR1: reactive sequential（每步观察 agent 返回，再决定下一步）
-这两种范式有根本的 trade-off: Conductor 支持并行但不能适应中间失败; OrchestratorR1 是串行但能实时调整。我们还引入了显式功能角色（6 种 agent type，而非 model-id 选择）和成本感知奖励。
+### Q3: "What's novel vs. Conductor? Both use GRPO for multi-agent orchestration."
+**A**: 本质区别在于控制论范式——closed-loop vs. open-loop control:
+- Conductor: plan-then-execute, 支持并行但不能适应中间失败
+- OrchestratorR1: observe-decide-act, 串行但能实时纠错
+
+这不是 "哪个更好" 的问题，而是 "什么条件下需要闭环"。Table 1 (adversarial) 量化了这个条件：当 agent 错误率 > 10% 时，闭环显著优于开环。
+
+我们的额外贡献: 显式功能角色（6 种 agent type vs. model-id 选择）、成本感知奖励、跨模态泛化。
 
 ### Q4: "The agent pool is hand-designed. How do you know 6 agents is optimal?"
-**A**: Agent 池是固定基础设施，类似 tool-use 中的 tool 定义。消融实验（Table 2）证明每种 agent 的贡献。未来工作可以探索自动发现 agent 角色。
+**A**: Agent 池是固定基础设施，类似 tool-use 中的 tool 定义。消融实验（Table 4: w/o critic, w/o decomposer, w/o refiner）逐个验证每种 agent 的贡献。未来工作可以探索自动发现 agent 角色。
 
 ### Q5: "GRPO without critic — isn't PPO (Router-R1) better?"
 **A**: GRPO 训练效率更高（单网络 vs 双网络），在我们的设置下 GRPO 已足够有效（G=16 提供足够的组内方差）。Table X 对比了 3B 下 GRPO vs PPO 的效果。
 
-### Q6: "SFT warmup — doesn't this leak supervision signal？"
-**A**: SFT-only 消融（Table 2）准确率仅 X%，GRPO 后提升到 Y%，差异 Z% 全部来自 RL。SFT 仅教格式，不教策略。
+### Q6: "SFT warmup — doesn't this leak supervision signal?"
+**A**: SFT-only 消融（Table 4）准确率仅 X%，GRPO 后提升到 Y%，差异 Z% 全部来自 RL。SFT 仅教格式（XML tag 结构），不教策略（何时调什么 agent）。
 
-### Q7: "Serial execution is a bottleneck. Why not support parallel?"
-**A**: 串行是反应式编排的代价——为了获得闭环适应能力。在延迟敏感场景下，我们的 1-2 步路径（简单题）实际比 Conductor 的 3+ 步并行更快（因为我们不需要等待所有 worker 返回）。未来可以引入 conditional parallel execution。
+### Q7: "Serial execution is a bottleneck. Latency is higher than Conductor's parallel execution."
+**A**: 诚实回答——对复杂题（4+ 步），reactive 的延迟约为 open-loop 的 2 倍。但在混合工作负载下（60% 简单题 + 40% 复杂题），reactive 的 **平均延迟反而接近或更低**，因为简单题只需 1 步（~1.8s），而 open-loop 即使对简单题也走完整 4-phase pipeline（~2.3s）。
 
-### Q8 (新): "Conductor 用了 RouterDC, MoA, MASRouter 等多个 strong baseline，你的基线覆盖是否充分？"
-**A**: 我们的基线包括：(1) Router-R1（直接前作，学习型路由）；(2) Direct-GPT-4o（强模型上限）；(3) Self-Reflection 5-turn（多轮自反思）；(4) ReAct（标准 tool-use）；(5) w/o reactive（模拟 Conductor 的开环范式）。由于任务领域不同（我们覆盖 QA+推理+代码，而 RouterDC/MoA 等主要在推理/代码上有结果），直接复现这些基线在我们的全部 benchmark 上反而会引入不公平对比。我们引用 Conductor 论文中的 RouterDC/MoA 数据作为参考。
+Table 2 中的 Avg Latency 列证实了这一点。
 
-### Q9 (新): "Conductor 只需要 960 条训练数据，你需要 5K+，训练效率更低？"
-**A**: 虽然我们需要更多训练数据，但关键差异在于**总训练成本**：Conductor 需要 2×H100 + GPT-5 级 API（每次 GRPO rollout 都要调 GPT-5），而我们只需要单 GPU + GPT-4o-mini API。实际美元成本我们更低。此外，我们的训练数据覆盖 3 种模态（QA/推理/代码），Conductor 的 960 条只覆盖推理+代码。
+Reactive trades latency for robustness — this is a **controlled trade-off**: the model can choose to invest more turns (and latency) only when intermediate results are unsatisfactory. Open-loop cannot make this trade-off at any latency budget.
+
+Future work: conditional parallel execution (generate multiple independent `<call>` tags in one step).
+
+### Q8: "Conductor 用了 RouterDC, MoA, MASRouter 等 strong baseline，你的基线覆盖是否充分？"
+**A**: 我们的基线包括 7 种方法：Router-R1（RL 路由）、Direct-Strong/Cheap（上下界）、Self-Reflection 5-turn、ReAct（tool-use）、Fixed-Pipeline（固定序列）、w/o reactive（开环消融）。由于任务领域不同（我们覆盖 QA+推理+代码），直接复现 RouterDC/MoA 在全部 10 个 benchmark 上反而引入不公平对比。我们引用 Conductor 论文数据作为参考。
+
+### Q9: "Conductor 只需 960 条训练数据，你需要 5K+？"
+**A**: 关键差异在 **总美元成本**：Conductor 的每次 GRPO rollout 都调用 GPT-5 + Claude Sonnet 4 等前沿 API，我们只调 GPT-4o-mini。实际训练的美元总成本我们更低。训练数据量更多是因为我们覆盖 3 种模态（QA/推理/代码）。
+
+### Q10 (新): "Does `<think>` actually contribute, or is it just filler?"
+**A**: Table 4 的 w/o think 消融证明 think 有贡献（F1 下降 X%）。更重要的是，事后分析（Section 5.3）发现 think 涌现出了有意义的复杂度感知行为：
+- 多跳题的 think 比简单题长 X%
+- Think 中的规划关键词（"decompose", "verify"）与后续行为一致率达 Y%
+- 这些行为完全无监督涌现——reward 只看 `<call>` 和 `<answer>` 的结果
+
+### Q11 (新): "You claim cost advantage, but reactive and open-loop have similar API costs on complex tasks."
+**A**: 准确。API 美元成本差异主要来自 **worker pool 选择**（cheap vs. matched, 10-50x），不来自执行范式。Reactive 的成本优势在于简单题的自适应提前终止（Table 2: simple QA avg turns ≈ 1.2 vs. Fixed-Pipeline = 6.0）。
+
+我们的成本叙事有两层，不混淆：
+1. **执行范式**: reactive 的优势在 robustness 和自适应效率，不在 API 美元
+2. **Worker pool**: cheap pool 的优势在 API 美元（10-50x），与执行范式正交
+
+### Q12 (新): "Reactive 的延迟和成本优势主要来自简单题的提前终止。如果只看复杂题呢？"
+**A**: 在复杂题上，reactive 的 API 美元成本与 open-loop 接近（调用次数相当）。但 reactive 有两个不可替代的优势：
+1. **错误恢复**: Table 1 adversarial 实验中，性能差距在复杂多跳题上最大
+2. **动态调整**: reactive 可以根据中间结果增减步骤，而 open-loop 在 Phase 1 就固定了所有步骤
+
+复杂题上 reactive 的延迟更高（串行 4+ 步），这是 robustness 的代价——我们在论文中诚实报告了这一点（Table 1-4 均含 Avg Latency 列）。

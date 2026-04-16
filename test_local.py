@@ -164,6 +164,99 @@ def test_reward():
     print("\nReward tests done.")
 
 
+# ── 4. strip_think 测试（纯本地）─────────────────────────────────────────
+
+def test_strip_think():
+    print("\n" + "=" * 60)
+    print("TEST 4: strip_think")
+    print("=" * 60)
+
+    from data_process.strip_think import strip_think
+
+    cases = [
+        (
+            '<think>简单</think>\n<call type="executor_cheap">q</call>',
+            '<call type="executor_cheap">q</call>',
+            "should remove think block"
+        ),
+        (
+            '<think>first</think>\n<think>second</think>\n<answer>42</answer>',
+            '<answer>42</answer>',
+            "should remove multiple think blocks"
+        ),
+        (
+            '<call type="decomposer">plan</call>',
+            '<call type="decomposer">plan</call>',
+            "no think block — unchanged"
+        ),
+    ]
+
+    all_pass = True
+    for text, expected, desc in cases:
+        result = strip_think(text)
+        ok = result == expected
+        all_pass = all_pass and ok
+        print(f"\n  {'[OK]' if ok else '[FAIL]'} {desc}")
+        if not ok:
+            print(f"    expected: {expected!r}")
+            print(f"    got:      {result!r}")
+
+    print(f"\nstrip_think tests {'PASSED' if all_pass else 'FAILED'}.")
+    return all_pass
+
+
+# ── 5. dispatch_with_noise 测试（纯本地）─────────────────────────────────
+
+def test_dispatch_with_noise():
+    print("\n" + "=" * 60)
+    print("TEST 5: dispatch_with_noise (mock)")
+    print("=" * 60)
+
+    # Test with a mock registry — just verify noise mechanics
+    import time
+
+    class MockAgent:
+        def call(self, query):
+            return f"answer to {query}", 0.001
+
+    class MockRegistry(AgentRegistry):
+        def __init__(self):
+            self.agents = {"executor_cheap": MockAgent()}
+            self.pool_name = "mock"
+
+    reg = MockRegistry()
+
+    # Test timeout
+    resp, cost, meta = reg.dispatch_with_noise("executor_cheap", "test", timeout_prob=1.0)
+    assert meta["timed_out"], "should timeout"
+    assert resp == "[TIMEOUT]"
+    print("  [OK] timeout simulation")
+
+    # Test corruption
+    resp, cost, meta = reg.dispatch_with_noise("executor_cheap", "test", corrupt_prob=1.0)
+    assert meta["corrupted"], "should corrupt"
+    assert resp.endswith("...")
+    print("  [OK] corruption simulation")
+
+    # Test latency injection
+    t0 = time.time()
+    resp, cost, meta = reg.dispatch_with_noise("executor_cheap", "test",
+                                                latency_ms=200, noise_type="uniform")
+    elapsed_ms = (time.time() - t0) * 1000
+    assert meta["latency_injected_ms"] > 0, "should inject latency"
+    assert elapsed_ms > 50, f"should have delayed, got {elapsed_ms:.0f}ms"
+    print(f"  [OK] latency injection ({meta['latency_injected_ms']:.0f}ms injected, {elapsed_ms:.0f}ms elapsed)")
+
+    # Test normal (no noise)
+    resp, cost, meta = reg.dispatch_with_noise("executor_cheap", "hello")
+    assert not meta["timed_out"] and not meta["corrupted"]
+    assert "hello" in resp
+    print("  [OK] no-noise passthrough")
+
+    print("\ndispatch_with_noise tests PASSED.")
+    return True
+
+
 # ── Main ──────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
@@ -176,6 +269,8 @@ if __name__ == "__main__":
 
     test_parser()
     test_reward()
+    test_strip_think()
+    test_dispatch_with_noise()
 
     if not args.skip_api:
         if not args.api_base or not args.api_key:

@@ -1,4 +1,6 @@
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import random
+import time
 from .base_agent import BaseAgent
 
 # Agent type → system prompt
@@ -96,3 +98,56 @@ class AgentRegistry:
                 idx = futures[future]
                 results[idx] = future.result()
         return results
+
+    def dispatch_with_noise(
+        self,
+        agent_type: str,
+        query: str,
+        noise_type: str = "gaussian",
+        latency_ms: float = 0.0,
+        timeout_prob: float = 0.0,
+        corrupt_prob: float = 0.0,
+    ) -> tuple[str, float, dict]:
+        """Dispatch with injected noise for robustness ablation.
+
+        Args:
+            agent_type: Agent to dispatch to.
+            query: The query string.
+            noise_type: Latency noise distribution — "gaussian", "uniform", or "exponential".
+            latency_ms: Mean additional latency in milliseconds.
+            timeout_prob: Probability of simulating a timeout (returns empty response).
+            corrupt_prob: Probability of truncating the response (simulates degraded output).
+
+        Returns:
+            (response, cost, noise_meta) where noise_meta contains details of injected noise.
+        """
+        noise_meta = {"noise_type": noise_type, "latency_injected_ms": 0.0,
+                       "timed_out": False, "corrupted": False}
+
+        # Simulate timeout
+        if timeout_prob > 0 and random.random() < timeout_prob:
+            noise_meta["timed_out"] = True
+            return "[TIMEOUT]", 0.0, noise_meta
+
+        # Inject latency
+        if latency_ms > 0:
+            if noise_type == "gaussian":
+                delay = max(0, random.gauss(latency_ms, latency_ms * 0.3))
+            elif noise_type == "exponential":
+                delay = random.expovariate(1.0 / latency_ms)
+            else:  # uniform
+                delay = random.uniform(0, latency_ms * 2)
+            noise_meta["latency_injected_ms"] = round(delay, 1)
+            time.sleep(delay / 1000.0)
+
+        if agent_type not in self.agents:
+            return f"[Unknown agent type: {agent_type}]", 0.0, noise_meta
+        response, cost = self.agents[agent_type].call(query)
+
+        # Simulate corruption (truncate response)
+        if corrupt_prob > 0 and random.random() < corrupt_prob:
+            cut = max(1, len(response) // 3)
+            response = response[:cut] + "..."
+            noise_meta["corrupted"] = True
+
+        return response, cost, noise_meta

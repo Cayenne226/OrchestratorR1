@@ -12,6 +12,7 @@ Usage:
 
 import argparse
 import json
+import time
 from pathlib import Path
 from tqdm import tqdm
 from transformers import AutoTokenizer, AutoModelForCausalLM
@@ -73,8 +74,13 @@ def main():
     results = []
     total_em = total_f1 = total_cost = total_turns = 0.0
 
+    total_latency = 0.0
+
     for record in tqdm(records, desc="Evaluating"):
+        t0 = time.time()
         rollout = manager.rollout(record["input"])
+        latency_sec = time.time() - t0
+        total_latency += latency_sec
         gold = record["answer"]
         pred = rollout.answer or ""
 
@@ -96,6 +102,7 @@ def main():
             "n_turns":     rollout.n_turns,
             "total_cost":  rollout.total_cost,
             "agent_calls": rollout.agent_calls,
+            "latency_sec": round(latency_sec, 3),
             "source":      record.get("source", ""),
             "difficulty":  record.get("difficulty", ""),
         })
@@ -108,6 +115,7 @@ def main():
         "f1":           total_f1 / n,
         "avg_cost_usd": total_cost / n,
         "avg_turns":    total_turns / n,
+        "avg_latency_sec": total_latency / n,
     }
     print("\n=== Evaluation Results ===")
     for k, v in summary.items():
