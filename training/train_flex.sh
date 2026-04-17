@@ -10,8 +10,8 @@ export TOKENIZERS_PARALLELISM=false
 export PYTHONPATH=$(dirname "$0")/..
 
 # ── API credentials ────────────────────────────────────────────────────────
-API_BASE=${API_BASE:}
-API_KEY=${API_KEY:}
+API_BASE=${API_BASE:?"ERROR: set API_BASE env var"}
+API_KEY=${API_KEY:?"ERROR: set API_KEY env var"}
 
 # ── Parse arguments ────────────────────────────────────────────────────────
 GPU_TYPE="3090"  # default
@@ -62,10 +62,11 @@ else
         echo "    Training: 7B LoRA"
         MODEL_PATH=${MODEL_PATH:-"models/Qwen2.5-7B-Instruct"}
         ACCEL_CONFIG="training/accelerate_fsdp_4gpu_lora.yaml"
-        BATCH_SIZE=2
-        GRAD_ACCUM=8
+        BATCH_SIZE=1
+        GRAD_ACCUM=16
+        NUM_GENERATIONS=4
         LEARNING_RATE="5e-5"
-        LORA_FLAG="--use_lora --lora_r 64 --lora_alpha 128"
+        LORA_FLAG="--use_lora --lora_r 64 --lora_alpha 128 --gradient_checkpointing"
     else
         echo "    Training: 3B Full Fine-Tuning"
         MODEL_PATH=${MODEL_PATH:-"models/Qwen2.5-3B-Instruct"}
@@ -77,6 +78,7 @@ else
     fi
 fi
 
+NUM_GENERATIONS=${NUM_GENERATIONS:-8}
 DATA_PATH=${DATA_PATH:-"data/train_mixed.jsonl"}
 OUTPUT_DIR=${OUTPUT_DIR:-"checkpoints/orchestrator_r1_${GPU_TYPE}_$(date +%m%d)"}
 
@@ -96,7 +98,7 @@ accelerate launch \
     --api_key "$API_KEY" \
     --per_device_batch_size "$BATCH_SIZE" \
     --grad_accum "$GRAD_ACCUM" \
-    --num_generations 8 \
+    --num_generations "$NUM_GENERATIONS" \
     --max_completion_length 512 \
     --max_turns 6 \
     --learning_rate "$LEARNING_RATE" \

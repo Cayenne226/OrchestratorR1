@@ -73,10 +73,7 @@ def main():
     )
 
     if args.gradient_checkpointing:
-        model.gradient_checkpointing_enable(
-            gradient_checkpointing_kwargs={"use_reentrant": False}
-        )
-        print("Gradient checkpointing enabled")
+        print("Gradient checkpointing will be enabled by SFTConfig")
 
     if args.use_lora:
         lora_config = LoraConfig(
