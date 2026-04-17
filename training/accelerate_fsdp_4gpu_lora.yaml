@@ -5,7 +5,7 @@ fsdp_config:
   fsdp_backward_prefetch_policy: BACKWARD_PRE
   fsdp_forward_prefetch: false
   fsdp_offload_params: false
-  fsdp_sharding_strategy: SHARD_GRAD_OP      # ZeRO-2: shard optimizer states + gradients
+  fsdp_sharding_strategy: FULL_SHARD          # ZeRO-3: shard params + optimizer + gradients
   fsdp_state_dict_type: FULL_STATE_DICT
   fsdp_transformer_layer_cls_to_wrap: Qwen2DecoderLayer
   fsdp_use_orig_params: true

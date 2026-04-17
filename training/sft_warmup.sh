@@ -45,11 +45,12 @@ elif [ "$USE_LORA" = true ]; then
     echo "=== Linux LoRA Mode: 4x RTX 3090, FSDP + LoRA, 7B ==="
     export CUDA_VISIBLE_DEVICES=0,1,2,3
     export NCCL_DEBUG=WARNING
+    export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
     ACCEL_CONFIG="training/accelerate_fsdp_4gpu_lora.yaml"
     MODEL_PATH=${MODEL_PATH:-"models/Qwen2.5-7B-Instruct"}
-    BATCH_SIZE=2
-    GRAD_ACCUM=8
-    LORA_FLAG="--use_lora --lora_r 64 --lora_alpha 128"
+    BATCH_SIZE=1
+    GRAD_ACCUM=16
+    LORA_FLAG="--use_lora --lora_r 32 --lora_alpha 64"
     GC_FLAG="--gradient_checkpointing"
 
 else
@@ -66,6 +67,17 @@ fi
 
 DATA_PATH=${DATA_PATH:-"data/sft_warmup.jsonl"}
 OUTPUT_DIR=${OUTPUT_DIR:-"checkpoints/sft_warmup"}
+
+# Pre-flight: check GPU memory availability
+echo "=== GPU Status ==="
+nvidia-smi --query-gpu=index,memory.used,memory.total --format=csv,noheader,nounits 2>/dev/null | while IFS=', ' read -r idx used total; do
+    pct=$((used * 100 / total))
+    if [ "$pct" -gt 20 ]; then
+        echo "WARNING: GPU $idx has ${used}MiB / ${total}MiB used (${pct}%). Kill stale processes first!"
+    else
+        echo "GPU $idx: ${used}MiB / ${total}MiB (OK)"
+    fi
+done
 
 echo "Model: $MODEL_PATH"
 echo "Data: $DATA_PATH"

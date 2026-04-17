@@ -68,8 +68,11 @@ def main():
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
+    import torch
+
     model = AutoModelForCausalLM.from_pretrained(
-        model_path, torch_dtype="auto", local_files_only=True,
+        model_path, torch_dtype=torch.bfloat16, local_files_only=True,
+        low_cpu_mem_usage=True,
     )
 
     if args.gradient_checkpointing:
