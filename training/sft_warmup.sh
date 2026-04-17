@@ -42,15 +42,15 @@ elif [ "$WINDOWS_MODE" = true ]; then
     GC_FLAG=""
 
 elif [ "$USE_LORA" = true ]; then
-    echo "=== Linux LoRA Mode: 4x RTX 3090, FSDP + LoRA, 7B ==="
+    echo "=== Linux QLoRA Mode: 4x RTX 3090, DDP + 4-bit + LoRA, 7B ==="
     export CUDA_VISIBLE_DEVICES=0,1,2,3
     export NCCL_DEBUG=WARNING
     export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
-    ACCEL_CONFIG="training/accelerate_fsdp_4gpu_lora.yaml"
+    ACCEL_CONFIG="training/accelerate_ddp_4gpu.yaml"
     MODEL_PATH=${MODEL_PATH:-"models/Qwen2.5-7B-Instruct"}
-    BATCH_SIZE=1
-    GRAD_ACCUM=16
-    LORA_FLAG="--use_lora --lora_r 32 --lora_alpha 64"
+    BATCH_SIZE=2
+    GRAD_ACCUM=8
+    LORA_FLAG="--use_qlora --lora_r 32 --lora_alpha 64"
     GC_FLAG="--gradient_checkpointing"
 
 else

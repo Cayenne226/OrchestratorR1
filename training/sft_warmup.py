@@ -14,9 +14,10 @@ import sys
 from pathlib import Path
 from typing import Optional
 
+import torch
 from datasets import Dataset
-from transformers import AutoTokenizer, AutoModelForCausalLM
-from peft import LoraConfig, get_peft_model, TaskType
+from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
+from peft import LoraConfig, get_peft_model, TaskType, prepare_model_for_kbit_training
 
 from orchestrator_r1.prompts.system_prompt import SYSTEM_PROMPT
 
@@ -35,6 +36,8 @@ def parse_args():
     parser.add_argument("--max_seq_length", type=int, default=512)
     parser.add_argument("--use_lora",      action="store_true",
                         help="Use LoRA (DDP mode)")
+    parser.add_argument("--use_qlora",     action="store_true",
+                        help="Use QLoRA (4-bit quantized base + LoRA, DDP mode)")
     parser.add_argument("--lora_r",        type=int, default=64)
     parser.add_argument("--lora_alpha",    type=int, default=128)
     parser.add_argument("--lora_dropout",  type=float, default=0.05)
@@ -70,15 +73,31 @@ def main():
 
     import torch
 
+    quantization_config = None
+    if args.use_qlora:
+        quantization_config = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_compute_dtype=torch.bfloat16,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_use_double_quant=True,
+        )
+
     model = AutoModelForCausalLM.from_pretrained(
-        model_path, torch_dtype=torch.bfloat16, local_files_only=True,
+        model_path,
+        torch_dtype=torch.bfloat16,
+        local_files_only=True,
         low_cpu_mem_usage=True,
+        quantization_config=quantization_config,
     )
 
     if args.gradient_checkpointing:
         print("Gradient checkpointing will be enabled by SFTConfig")
 
-    if args.use_lora:
+    if args.use_qlora or args.use_lora:
+        if args.use_qlora:
+            model = prepare_model_for_kbit_training(
+                model, use_gradient_checkpointing=args.gradient_checkpointing
+            )
         lora_config = LoraConfig(
             task_type=TaskType.CAUSAL_LM,
             r=args.lora_r,
