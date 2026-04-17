@@ -123,7 +123,7 @@ def main():
         gradient_accumulation_steps=args.grad_accum,
         learning_rate=args.learning_rate,
         num_train_epochs=args.num_epochs,
-        max_length=args.max_seq_length,
+        max_seq_length=args.max_seq_length,
         bf16=True,
         gradient_checkpointing=args.gradient_checkpointing,
         gradient_checkpointing_kwargs={"use_reentrant": False},
