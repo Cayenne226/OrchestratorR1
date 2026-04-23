@@ -1023,13 +1023,20 @@ def compute_metric(pred: str, record: dict) -> dict:
 
 ### 硬件配置
 
-| 模式 | GPU | 模型 | 显存/GPU | 策略 |
-|------|-----|------|----------|------|
-| LoRA (Windows) | 4xRTX 3090 | 3B | ~8GB | DDP + Gloo |
-| 全参数 (Windows) | 4xRTX 3090 | 3B | ~16.5GB | ZeRO-2 + Gloo |
-| FSDP (Linux) | 4xRTX 3090 | 3B | ~20GB | FSDP + NCCL |
-| LoRA (A100) | 4xA100 | 7B | ~20GB | FSDP + LoRA |
-| 全参数 (A100) | 4xA100 | 7B | ~50GB | FSDP full |
+| 模式 | 启动命令 | GPU | 模型 | 显存/GPU | 策略 |
+|------|---------|-----|------|----------|------|
+| LoRA (Windows) | `train_lora.bat` | 4×RTX 3090 | 3B | ~8GB | DDP + Gloo + LoRA |
+| 全参数 (Windows) | `train_full.bat` | 4×RTX 3090 | 3B | ~16.5GB | ZeRO-2 + Gloo |
+| FSDP (Linux) | `bash train.sh` | 4×RTX 3090 | 3B | ~20GB | FSDP + NCCL |
+| A800 (Linux) | `bash train.sh --a800` | 2×A800 80GB | 3B | ~40GB | DDP + NCCL |
+| **H200 (Linux,主力推荐)** | **`bash train.sh --h200`** | **2×H200 141GB** | **7B** | **~90GB** | **FSDP 全参 FT** |
+
+**H200 模式关键超参**(对标 Conductor 的配置):
+- `per_device_batch_size=8`,`grad_accum=2`(有效 batch = 32)
+- `num_generations=16`(GRPO rollout group 翻倍,优势估计更准)
+- `max_completion_length=2048`(支持更长推理轨迹)
+- `max_turns=6`(reactive 叙事卖点)
+- 单 seed 训练时长 **~18–24h**,3 seeds 约 **3 天**
 
 ---
 
@@ -1086,19 +1093,19 @@ python data_process/prepare_sft.py \
 ### 训练
 
 ```bash
-# 阶段 0：SFT 热身（教会 XML 标签格式，4x3090 约 1-2 小时）
-accelerate launch --config_file training/accelerate_fsdp_4gpu.yaml \
-    training/sft_warmup.py \
-    --model_path models/Qwen2.5-3B-Instruct \
-    --data_path data/sft_warmup.jsonl \
-    --output_dir checkpoints/sft_warmup_3b \
-    --num_epochs 5 --use_lora
+# 阶段 0:SFT 热身(教会 XML 标签格式)
+# 4×3090 LoRA(~1-2h):
+bash training/sft_warmup.sh --lora
+# 2×H200 全参 7B(~2-3h):
+bash training/sft_warmup.sh --a800      # 或手动切 H200 模式
 
-# 阶段 1：GRPO 强化学习训练
-bash training/train_flex.sh --gpu 3090 --lora \
-    MODEL_PATH=checkpoints/sft_warmup_3b \
-    DATA_PATH=data/train_mixed.jsonl \
-    OUTPUT_DIR=checkpoints/orch_grpo_3b_seed1
+# 阶段 1:GRPO 强化学习训练
+# 2×H200 141GB(7B 全参,单 seed ~18-24h,推荐):
+bash training/train.sh --h200 MODEL_PATH=checkpoints/sft_warmup_7b
+# 2×A800 80GB(3B 全参):
+bash training/train.sh --a800
+# 4×RTX 3090(3B LoRA,Windows):
+training\train_lora.bat
 ```
 
 ### 评估
@@ -1125,6 +1132,79 @@ python inference/infer.py \
     --api_base $API_BASE --api_key $API_KEY \
     --input "一战结束的条约签署时美国总统是谁？"
 ```
+
+---
+
+---
+
+## 13. 后续规划(Roadmap)
+
+> 目标会议:**AAAI 2026 / NeurIPS 2026**(投稿窗口紧,需差异化于 Conductor ICLR 2026)
+> 当前进度:数据准备 + 基线评估完成,核心训练待启动
+
+### 阶段 1:训练打通(Week 1,~3 天)
+
+- [ ] **SFT 热身**:在 H200 上跑通 7B 全参 SFT(~3h),验证 `<call>/<answer>` 格式产出率 > 95%
+- [ ] **GRPO 单 seed 试跑**:300 steps 小规模训练,确认 reward 上升、KL 不爆、agent 调用分布不塌陷
+- [ ] **关键监控指标**:`reward_mean`, `format_error_rate`, `agent_distribution_entropy`, `avg_n_turns`
+
+### 阶段 2:主结果(Week 2,~5 天)
+
+- [ ] **GRPO × 3 seeds 完整训练**(2×H200,~3 天):产出 `orch_grpo_7b_seed{1,2,3}`
+- [ ] **全测试集评估**:10 个 benchmark × 3 seeds × 2 worker pools(cheap + matched)
+- [ ] **Self-Reflection 5-turn 基线**:Conductor 论文中的核心基线,需自己实现并跑全部数据集
+- [ ] **ReAct 基线**:Qwen2.5-7B + tool-use,与我们方法 backbone 对齐
+
+### 阶段 3:消融与差异化证据(Week 3,~5 天)
+
+按 reviewer 关注度排序:
+
+1. ★★★ **w/o reactive** — 用 [generation_openloop.py](OrchestratorR1/orchestrator_r1/orchestrator/generation_openloop.py) 直接对比开环范式,**回答"为什么不用 Conductor 方式"**
+2. ★★★ **matched-worker 配置** — GPQA / LiveCodeBench 上用 Claude-Sonnet-4.6 / Gemini-2.5-Pro 做 worker,与 Conductor 正面对标
+3. ★★☆ **w/o critic / w/o decomposer** — 验证功能化 agent 角色的必要性
+4. ★★☆ **α 敏感性**(0, 0.1, 0.3, 0.5, 0.7) — Pareto 曲线核心数据
+5. ★☆☆ **SFT-only / Fixed-Pipeline** — 证明 RL + 自适应的贡献
+
+### 阶段 4:分析图表(Week 4,~4 天)
+
+- [ ] **Agent 调用热力图**(6 agents × 10 datasets) — 涌现的 task-dependent 行为
+- [ ] **训练动态曲线**(steps × avg_turns,按任务复杂度分层) — RL 驱动行为变化
+- [ ] **Pareto 前沿**(cost vs F1,标注 Conductor 为高成本参考点) — 成本-质量可调
+- [ ] **Reactive case study × 3** — 中间反馈触发策略修正的具体实例(论文叙事关键)
+- [ ] **Scaling 小实验**:3B vs 7B(可选 14B) — 范式 scale 良好的证据
+
+### 阶段 5:论文撰写(Week 5,~7 天)
+
+- [ ] Method(2.5 页):MDP 形式化 + 6-agent pool + reactive loop + 复合奖励
+- [ ] Experiments(3 页):Table 1 主结果 + Table 2 vs Conductor + Table 3 消融 + Pareto 曲线
+- [ ] Analysis(1.5 页):热力图 + 训练动态 + case study + scaling
+- [ ] Intro + Related Work + Abstract + Appendix
+
+### 阶段 6:打磨与提交(Week 6,~5 天)
+
+- [ ] 补做 reviewer 高概率追问的实验(额外 seed、长上下文 ablation)
+- [ ] 图表美化、统一记号、匿名化检查、reproducibility checklist
+- [ ] Supplementary materials(完整代码 + 全部 raw results + agent prompts)
+
+### 关键风险与对策
+
+| 风险 | 概率 | 对策 |
+|------|------|------|
+| GRPO 不收敛 / reward 塌陷成单 agent | 中 | 增大 SFT 数据(200→500),调高 entropy_coef,降低 lr |
+| matched-worker zero-shot 迁移效果差 | 中 | 备一个 matched-worker 直接训练的 seed 作为 fallback |
+| Conductor 绝对分数远超我们 | **确定** | 不打数字战,主打 reactive/跨模态/成本三个差异化轴 |
+| API 预算超支 | 低 | 训练限 cheap pool,matched-worker 只用于评估 |
+| H200 时间被调试占用 | 中 | 严格执行"单 seed 试跑→确认信号→放大"的流程,禁止盲目并行 |
+
+### 算力预算(2×H200)
+
+| 阶段 | wall clock | API 成本 |
+|------|-----------|---------|
+| SFT 热身 | 3h | $5 |
+| GRPO × 3 seeds | 3 天 | ~$30 |
+| 消融 × 6 | 2-3 天 | ~$20 |
+| 全部评估(cheap + matched) | 1 天 | ~$300 |
+| **总计** | **~7 天 wall clock** | **~$355** |
 
 ---
 
