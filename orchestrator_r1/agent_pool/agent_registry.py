@@ -5,24 +5,15 @@ from .base_agent import BaseAgent
 
 # Agent type → system prompt
 AGENT_SYSTEM_PROMPTS = {
-    "refiner": (
-        "You are a search query optimization expert. Rewrite the given question or task "
-        "into a better-phrased query that will yield more accurate and relevant results. "
-        "Techniques: decompose implicit constraints, add context keywords, resolve pronouns "
-        "and references, rephrase for specificity. Output only the rewritten query, nothing else."
+    "executor": (
+        "You are an expert task executor. Complete the given task accurately. "
+        "For straightforward queries, be direct and concise. For complex queries, "
+        "provide thorough, well-structured output. Focus on correctness."
     ),
     "decomposer": (
         "You are a task planning expert. Break down the given complex task into a numbered list "
         "of independent, executable subtasks. Each subtask should be self-contained and actionable. "
         "Output only the numbered list, nothing else."
-    ),
-    "executor_cheap": (
-        "You are an efficient task executor. Complete the given task accurately and concisely. "
-        "Focus on correctness and clarity. Be direct and avoid unnecessary explanation."
-    ),
-    "executor_strong": (
-        "You are an expert with deep knowledge across many domains. Complete the given task "
-        "with high quality, thoroughness, and accuracy. Provide detailed, correct, and well-structured output."
     ),
     "critic": (
         "You are a strict quality reviewer. Evaluate the given result for correctness, completeness, "
@@ -36,62 +27,85 @@ AGENT_SYSTEM_PROMPTS = {
     ),
 }
 
-# Agent type → (model_name, cost_per_1m_tokens)
-# "cheap" pool — default, used during training and cost-efficient evaluation
+# Strong worker pool — used for both training and evaluation.
+# Aligned with Conductor's frontier worker pool for controlled comparison
+# (same workers, different orchestration paradigm: reactive vs open-loop).
+# executor supports two tiers: "strong" (high-quality, expensive) and "weak" (fast, cheap).
 AGENT_MODEL_CONFIG = {
-    "refiner":        ("gpt-4o-mini",         0.15),
-    "decomposer":     ("gpt-4o",              2.50),
-    "executor_cheap": ("gpt-4o-mini",         0.15),
-    "executor_strong":("claude-sonnet-4-6",   3.00),
-    "critic":         ("gemini-2.5-flash",    0.15),
-    "synthesizer":    ("gpt-4o-mini",         0.15),
-}
-
-# "matched" pool — aligned with Conductor's frontier worker pool for fair comparison
-AGENT_MODEL_CONFIG_MATCHED = {
-    "refiner":        ("claude-sonnet-4",      3.00),
-    "decomposer":     ("gemini-2.5-pro",       1.25),
-    "executor_cheap": ("qwen3-32b",            0.50),
-    "executor_strong":("gpt-5",               10.00),
-    "critic":         ("deepseek-r1-32b",      0.50),
-    "synthesizer":    ("gemma3-27b",           0.30),
-}
-
-WORKER_POOLS = {
-    "cheap": AGENT_MODEL_CONFIG,
-    "matched": AGENT_MODEL_CONFIG_MATCHED,
+    "executor": {
+        "strong": ("claude-sonnet-4",   3.00),
+        "weak":   ("gpt-4o",            2.50),
+    },
+    "decomposer":  ("gemini-2.5-pro",  1.25),
+    "critic":      ("claude-sonnet-4", 3.00),
+    "synthesizer": ("gpt-4o",          2.50),
 }
 
 
 class AgentRegistry:
-    def __init__(self, api_base: str, api_key: str, worker_pool: str = "cheap"):
-        pool = WORKER_POOLS.get(worker_pool, AGENT_MODEL_CONFIG)
-        self.pool_name = worker_pool
+    def __init__(self, api_base: str, api_key: str):
+        self.api_base = api_base
+        self.api_key = api_key
         self.agents: dict[str, BaseAgent] = {}
-        for agent_type, (model_name, cost) in pool.items():
-            self.agents[agent_type] = BaseAgent(
-                model_name=model_name,
-                cost_per_1m=cost,
-                system_prompt=AGENT_SYSTEM_PROMPTS[agent_type],
-                api_base=api_base,
-                api_key=api_key,
-            )
 
-    def dispatch(self, agent_type: str, query: str) -> tuple[str, float]:
-        """Dispatch a query to the specified agent. Returns (response, cost)."""
-        if agent_type not in self.agents:
-            return f"[Unknown agent type: {agent_type}]", 0.0
-        return self.agents[agent_type].call(query)
+        for agent_type, cfg in AGENT_MODEL_CONFIG.items():
+            if agent_type == "executor":
+                # executor has two tiers — instantiate both as separate BaseAgents
+                for tier, (model_name, cost) in cfg.items():
+                    key = f"executor:{tier}"
+                    self.agents[key] = BaseAgent(
+                        model_name=model_name,
+                        cost_per_1m=cost,
+                        system_prompt=AGENT_SYSTEM_PROMPTS["executor"],
+                        api_base=api_base,
+                        api_key=api_key,
+                    )
+            else:
+                model_name, cost = cfg
+                self.agents[agent_type] = BaseAgent(
+                    model_name=model_name,
+                    cost_per_1m=cost,
+                    system_prompt=AGENT_SYSTEM_PROMPTS[agent_type],
+                    api_base=api_base,
+                    api_key=api_key,
+                )
+
+    def _resolve_key(self, agent_type: str, tier: str | None = None) -> str:
+        if agent_type == "executor":
+            tier = tier or "weak"
+            return f"executor:{tier}"
+        return agent_type
+
+    def dispatch(
+        self,
+        agent_type: str,
+        query: str,
+        tier: str | None = None,
+    ) -> tuple[str, float]:
+        """Dispatch a query to the specified agent. Returns (response, cost).
+
+        For agent_type="executor", tier="strong"|"weak" selects the model variant.
+        Defaults to "weak" if tier is None or unrecognized.
+        """
+        key = self._resolve_key(agent_type, tier)
+        if key not in self.agents:
+            return f"[Unknown agent: {agent_type} (tier={tier})]", 0.0
+        return self.agents[key].call(query)
 
     def dispatch_batch(self, calls: list[dict]) -> list[tuple[str, float]]:
         """Dispatch multiple agent calls in parallel.
-        Each call is a dict with keys: agent_type, query.
+        Each call is a dict with keys: agent_type, query, [tier].
         Returns list of (response, cost) in same order.
         """
         results = [None] * len(calls)
         with ThreadPoolExecutor(max_workers=min(len(calls), 10)) as executor:
             futures = {
-                executor.submit(self.dispatch, c["agent_type"], c["query"]): i
+                executor.submit(
+                    self.dispatch,
+                    c["agent_type"],
+                    c["query"],
+                    c.get("tier"),
+                ): i
                 for i, c in enumerate(calls)
             }
             for future in as_completed(futures):
@@ -103,6 +117,7 @@ class AgentRegistry:
         self,
         agent_type: str,
         query: str,
+        tier: str | None = None,
         noise_type: str = "gaussian",
         latency_ms: float = 0.0,
         timeout_prob: float = 0.0,
@@ -113,6 +128,7 @@ class AgentRegistry:
         Args:
             agent_type: Agent to dispatch to.
             query: The query string.
+            tier: For agent_type="executor", "strong" or "weak".
             noise_type: Latency noise distribution — "gaussian", "uniform", or "exponential".
             latency_ms: Mean additional latency in milliseconds.
             timeout_prob: Probability of simulating a timeout (returns empty response).
@@ -124,27 +140,25 @@ class AgentRegistry:
         noise_meta = {"noise_type": noise_type, "latency_injected_ms": 0.0,
                        "timed_out": False, "corrupted": False}
 
-        # Simulate timeout
         if timeout_prob > 0 and random.random() < timeout_prob:
             noise_meta["timed_out"] = True
             return "[TIMEOUT]", 0.0, noise_meta
 
-        # Inject latency
         if latency_ms > 0:
             if noise_type == "gaussian":
                 delay = max(0, random.gauss(latency_ms, latency_ms * 0.3))
             elif noise_type == "exponential":
                 delay = random.expovariate(1.0 / latency_ms)
-            else:  # uniform
+            else:
                 delay = random.uniform(0, latency_ms * 2)
             noise_meta["latency_injected_ms"] = round(delay, 1)
             time.sleep(delay / 1000.0)
 
-        if agent_type not in self.agents:
-            return f"[Unknown agent type: {agent_type}]", 0.0, noise_meta
-        response, cost = self.agents[agent_type].call(query)
+        key = self._resolve_key(agent_type, tier)
+        if key not in self.agents:
+            return f"[Unknown agent: {agent_type} (tier={tier})]", 0.0, noise_meta
+        response, cost = self.agents[key].call(query)
 
-        # Simulate corruption (truncate response)
         if corrupt_prob > 0 and random.random() < corrupt_prob:
             cut = max(1, len(response) // 3)
             response = response[:cut] + "..."

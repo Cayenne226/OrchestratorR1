@@ -26,8 +26,8 @@ def test_parser():
         # 简单任务格式
         (
             '<think>简单问题直接查</think>\n'
-            '<call type="executor_cheap">二战什么时候结束</call>',
-            "should detect call: executor_cheap"
+            '<call type="executor" tier="weak">二战什么时候结束</call>',
+            "should detect call: executor (tier=weak)"
         ),
         # 复杂任务格式
         (
@@ -53,7 +53,7 @@ def test_parser():
         ),
         # 标签不匹配
         (
-            '<call type="executor_cheap">query',
+            '<call type="executor" tier="weak">query',
             "should fail validation: unclosed tag"
         ),
     ]
@@ -87,15 +87,15 @@ def test_agent_registry(api_base: str, api_key: str):
     registry = AgentRegistry(api_base=api_base, api_key=api_key)
 
     test_calls = [
-        ("executor_cheap", "二战是什么时候结束的？"),
-        ("refiner",        "写个程序"),
-        ("decomposer",     "构建一个带用户认证的博客系统"),
+        ("executor",   "二战是什么时候结束的？", "weak"),
+        ("executor",   "解释拓扑学中的同调群", "strong"),
+        ("decomposer", "构建一个带用户认证的博客系统", None),
     ]
 
-    for agent_type, query in test_calls:
-        print(f"\nAgent: {agent_type}")
+    for agent_type, query, tier in test_calls:
+        print(f"\nAgent: {agent_type}" + (f" (tier={tier})" if tier else ""))
         print(f"Query: {query}")
-        response, cost = registry.dispatch(agent_type, query)
+        response, cost = registry.dispatch(agent_type, query, tier=tier)
         print(f"Response: {response[:200]}")
         print(f"Cost: ${cost:.6f}")
 
@@ -114,9 +114,9 @@ def test_reward():
     cases = [
         {
             "desc": "完全正确 + 1轮 → 高奖励（含效率bonus）",
-            "response": '<think>简单</think><call type="executor_cheap">q</call><answer>1945年9月2日</answer>',
+            "response": '<think>简单</think><call type="executor" tier="weak">q</call><answer>1945年9月2日</answer>',
             "gold": "1945年9月2日",
-            "agent_calls": [{"agent_type": "executor_cheap", "cost": 0.0001}],
+            "agent_calls": [{"agent_type": "executor", "tier": "weak", "cost": 0.0001}],
             "n_turns": 1,
         },
         {
@@ -135,11 +135,11 @@ def test_reward():
         },
         {
             "desc": "正确 + 多轮调用 → 中等奖励（轮数惩罚）",
-            "response": '<think>复杂</think><call type="decomposer">q</call><call type="executor_strong">q</call><answer>1945年9月2日</answer>',
+            "response": '<think>复杂</think><call type="decomposer">q</call><call type="executor" tier="strong">q</call><answer>1945年9月2日</answer>',
             "gold": "1945年9月2日",
             "agent_calls": [
                 {"agent_type": "decomposer",      "cost": 0.005},
-                {"agent_type": "executor_strong", "cost": 0.003},
+                {"agent_type": "executor", "tier": "strong", "cost": 0.003},
             ],
             "n_turns": 4,
         },
@@ -175,8 +175,8 @@ def test_strip_think():
 
     cases = [
         (
-            '<think>简单</think>\n<call type="executor_cheap">q</call>',
-            '<call type="executor_cheap">q</call>',
+            '<think>简单</think>\n<call type="executor" tier="weak">q</call>',
+            '<call type="executor" tier="weak">q</call>',
             "should remove think block"
         ),
         (
@@ -221,26 +221,28 @@ def test_dispatch_with_noise():
 
     class MockRegistry(AgentRegistry):
         def __init__(self):
-            self.agents = {"executor_cheap": MockAgent()}
-            self.pool_name = "mock"
+            # Mock executor at weak tier — keys match _resolve_key("executor", "weak")
+            self.agents = {"executor:weak": MockAgent()}
+            self.api_base = ""
+            self.api_key = ""
 
     reg = MockRegistry()
 
     # Test timeout
-    resp, cost, meta = reg.dispatch_with_noise("executor_cheap", "test", timeout_prob=1.0)
+    resp, cost, meta = reg.dispatch_with_noise("executor", "test", tier="weak", timeout_prob=1.0)
     assert meta["timed_out"], "should timeout"
     assert resp == "[TIMEOUT]"
     print("  [OK] timeout simulation")
 
     # Test corruption
-    resp, cost, meta = reg.dispatch_with_noise("executor_cheap", "test", corrupt_prob=1.0)
+    resp, cost, meta = reg.dispatch_with_noise("executor", "test", tier="weak", corrupt_prob=1.0)
     assert meta["corrupted"], "should corrupt"
     assert resp.endswith("...")
     print("  [OK] corruption simulation")
 
     # Test latency injection
     t0 = time.time()
-    resp, cost, meta = reg.dispatch_with_noise("executor_cheap", "test",
+    resp, cost, meta = reg.dispatch_with_noise("executor", "test", tier="weak",
                                                 latency_ms=200, noise_type="uniform")
     elapsed_ms = (time.time() - t0) * 1000
     assert meta["latency_injected_ms"] > 0, "should inject latency"
@@ -248,7 +250,7 @@ def test_dispatch_with_noise():
     print(f"  [OK] latency injection ({meta['latency_injected_ms']:.0f}ms injected, {elapsed_ms:.0f}ms elapsed)")
 
     # Test normal (no noise)
-    resp, cost, meta = reg.dispatch_with_noise("executor_cheap", "hello")
+    resp, cost, meta = reg.dispatch_with_noise("executor", "hello", tier="weak")
     assert not meta["timed_out"] and not meta["corrupted"]
     assert "hello" in resp
     print("  [OK] no-noise passthrough")

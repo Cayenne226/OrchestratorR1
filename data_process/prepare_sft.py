@@ -3,7 +3,8 @@ Auto-generate SFT warmup examples using GPT-4o.
 
 Samples real questions from train_qa.jsonl and train_code.jsonl, sends them
 to GPT-4o with path-pattern-specific prompts, and collects properly formatted
-orchestration traces covering all 6 agent types.
+orchestration traces covering the 4-role agent pool (executor / decomposer /
+critic / synthesizer), with executor split by tier (weak / strong).
 
 Usage:
     python data_process/prepare_sft.py \
@@ -32,12 +33,13 @@ from openai import OpenAI
 GENERATION_SYSTEM_PROMPT = """You are a training data generator. Given a user question and its gold answer, generate a realistic orchestration trace using EXACTLY the XML tags below.
 
 ## Available Agent Types
-- executor_cheap: For simple factual questions (single lookup)
-- executor_strong: For complex reasoning or analysis
+- executor (tier="weak"): For simple factual questions or straightforward tasks
+- executor (tier="strong"): For complex reasoning, hard analysis, or detailed code
 - decomposer: For multi-hop questions that need to be broken into subtasks
 - synthesizer: For combining results from multiple agent calls
 - critic: For verifying quality of a result
-- refiner: For rewriting queries with implicit references to improve retrieval accuracy
+
+If a query has implicit references and needs rephrasing, do it inside <think> — there is no separate refiner agent.
 
 ## Required Format
 Your output MUST follow this exact structure:
@@ -46,64 +48,69 @@ Your output MUST follow this exact structure:
 <call type="AGENT_TYPE">Query to the agent</call>
 <answer>The final answer (must match or contain the gold answer)</answer>
 
+For executor calls, include the tier attribute:
+<call type="executor" tier="weak">...</call>
+<call type="executor" tier="strong">...</call>
+
 ## Rules
 1. ALWAYS start with <think>
 2. ALWAYS end with <answer>
 3. The <answer> MUST contain the gold answer text
 4. Do NOT include <information> tags — those are injected by the system at runtime
 5. Keep <think> reasoning concise (1-2 sentences)
-6. Keep <answer> concise — just the answer, not a full paragraph"""
+6. Keep <answer> concise — just the answer, not a full paragraph
+7. For executor calls, ALWAYS specify tier="weak" or tier="strong"."""
 
 # ── Path patterns: different prompts steer GPT-4o toward specific agent combos
 
 PATH_PATTERNS = {
     "simple_direct": {
-        "count": 40,
+        "count": 50,
         "difficulty": "simple",
         "task_type": "qa",
-        "instruction": "Use ONLY one executor_cheap call. Pattern: think → executor_cheap → answer.",
+        "instruction": 'Use ONLY one executor (tier="weak") call. Pattern: think → executor(weak) → answer.',
     },
-    "refine_then_exec": {
+    "rewrite_then_exec": {
         "count": 25,
         "difficulty": "simple",
         "task_type": "qa",
-        "instruction": "First use refiner to rewrite the query for better retrieval, then executor_cheap. Pattern: think → refiner → executor_cheap → answer.",
+        "instruction": 'The query has implicit references — rewrite it inside <think>, then call executor (tier="weak"). Pattern: think (with rewritten query) → executor(weak) → answer.',
     },
     "strong_direct": {
-        "count": 20,
+        "count": 25,
         "difficulty": "multi_hop",
         "task_type": "qa",
-        "instruction": "Use ONLY one executor_strong call for this hard question. Pattern: think → executor_strong → answer.",
+        "instruction": 'Use ONLY one executor (tier="strong") call for this hard question. Pattern: think → executor(strong) → answer.',
     },
     "decompose_exec_synth": {
         "count": 35,
         "difficulty": "multi_hop",
         "task_type": "qa",
-        "instruction": "Decompose into subtasks, execute each with executor_cheap, then synthesize. Pattern: think → decomposer → executor_cheap (×2-3) → synthesizer → answer.",
+        "instruction": 'Decompose into subtasks, execute each with executor (tier="weak"), then synthesize. Pattern: think → decomposer → executor(weak) (×2-3) → synthesizer → answer.',
     },
     "decompose_strong_critic": {
         "count": 30,
         "difficulty": "multi_hop",
         "task_type": "qa",
-        "instruction": "Decompose, execute with executor_strong, then use critic to verify. Pattern: think → decomposer → executor_strong (×1-2) → critic → answer.",
+        "instruction": 'Decompose, execute with executor (tier="strong"), then use critic to verify. Pattern: think → decomposer → executor(strong) (×1-2) → critic → answer.',
     },
     "full_pipeline": {
         "count": 20,
         "difficulty": "multi_hop",
         "task_type": "qa",
-        "instruction": "Use the full pipeline: decompose, execute with strong, critic finds issue, re-execute, then answer. Pattern: think → decomposer → executor_strong → critic → executor_strong → answer.",
+        "instruction": 'Use the full pipeline: decompose, execute with strong, critic finds issue, re-execute, then answer. Pattern: think → decomposer → executor(strong) → critic → executor(strong) → answer.',
     },
     "code_simple": {
         "count": 15,
         "difficulty": "code",
         "task_type": "code",
-        "instruction": "Simple coding task. Use executor_cheap. Pattern: think → executor_cheap → answer. The answer should be the code solution.",
+        "instruction": 'Simple coding task. Use executor (tier="weak"). Pattern: think → executor(weak) → answer. The answer should be the code solution.',
     },
     "code_complex": {
         "count": 15,
         "difficulty": "code",
         "task_type": "code",
-        "instruction": "Complex coding task. Decompose, use executor_strong for implementation, critic to verify logic. Pattern: think → decomposer → executor_strong → critic → answer. The answer should be the code solution.",
+        "instruction": 'Complex coding task. Decompose, use executor (tier="strong") for implementation, critic to verify logic. Pattern: think → decomposer → executor(strong) → critic → answer. The answer should be the code solution.',
     },
 }
 
@@ -117,7 +124,9 @@ Generate the orchestration trace following the exact path pattern above."""
 
 # ── Format validation ────────────────────────────────────────────────────────
 
-VALID_AGENT_TYPES = {"executor_cheap", "executor_strong", "decomposer", "synthesizer", "critic", "refiner"}
+VALID_AGENT_TYPES = {"executor", "decomposer", "critic", "synthesizer"}
+VALID_EXECUTOR_TIERS = {"weak", "strong"}
+
 
 def validate_trace(output: str) -> tuple[bool, str]:
     """Check that the generated trace has valid format."""
@@ -133,16 +142,21 @@ def validate_trace(output: str) -> tuple[bool, str]:
         return False, "missing </answer>"
 
     # Check that all <call> tags have valid agent types
-    for match in re.finditer(r'<call\s+type="(\w+)"', output):
+    for match in re.finditer(r'<call\s+type="(\w+)"([^>]*)>', output):
         agent_type = match.group(1)
+        attrs = match.group(2)
         if agent_type not in VALID_AGENT_TYPES:
             return False, f"invalid agent type: {agent_type}"
+        if agent_type == "executor":
+            tier_match = re.search(r'tier="(\w+)"', attrs)
+            if not tier_match:
+                return False, "executor call missing tier attribute"
+            if tier_match.group(1) not in VALID_EXECUTOR_TIERS:
+                return False, f"invalid executor tier: {tier_match.group(1)}"
 
-    # Must have at least one <call>
     if '<call type="' not in output:
         return False, "no agent calls"
 
-    # <answer> must come after all <call> tags
     last_call = output.rfind("</call>")
     first_answer = output.find("<answer>")
     if last_call > first_answer:
@@ -152,8 +166,17 @@ def validate_trace(output: str) -> tuple[bool, str]:
 
 
 def extract_agent_types(output: str) -> list[str]:
-    """Extract all agent types used in a trace."""
-    return re.findall(r'<call\s+type="(\w+)"', output)
+    """Extract all agent types (with tier for executor) used in a trace."""
+    types = []
+    for match in re.finditer(r'<call\s+type="(\w+)"([^>]*)>', output):
+        agent_type = match.group(1)
+        if agent_type == "executor":
+            tier_match = re.search(r'tier="(\w+)"', match.group(2))
+            tier = tier_match.group(1) if tier_match else "weak"
+            types.append(f"executor:{tier}")
+        else:
+            types.append(agent_type)
+    return types
 
 
 # ── Main generation logic ────────────────────────────────────────────────────

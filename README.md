@@ -1,6 +1,6 @@
 # OrchestratorR1: Reactive Multi-Agent Orchestration via Reinforcement Learning
 
-> **One-sentence summary**: A small LLM (Qwen2.5-3B/7B) is trained with GRPO reinforcement learning to become a "meta-controller" that reactively orchestrates 6 specialized external agents — it observes each agent's response before deciding the next action, outperforming both fixed pipelines and open-loop planners.
+> **One-sentence summary**: A small LLM (Qwen2.5-3B/7B) is trained with progressive GRPO reinforcement learning to become a "meta-controller" that reactively orchestrates 4 functionally specialized agents (executor / decomposer / critic / synthesizer) — where role definitions are human priors but invocation timing, ordering, and sub-query formulation are all emergent from the RL reward landscape.
 
 ---
 
@@ -21,11 +21,11 @@
   - [6.7 System Prompt (`system_prompt.py`)](#67-system-prompt-system_promptpy)
 - [7. Training Pipeline](#7-training-pipeline)
   - [7.1 Stage 0: SFT Warmup](#71-stage-0-sft-warmup)
-  - [7.2 Stage 1: GRPO Reinforcement Learning](#72-stage-1-grpo-reinforcement-learning)
+  - [7.2 Stages 1-3: Progressive GRPO Reinforcement Learning](#72-stages-1-3-progressive-grpo-reinforcement-learning)
   - [7.3 The Reward Function in Training](#73-the-reward-function-in-training)
 - [8. Data Pipeline](#8-data-pipeline)
 - [9. Evaluation System](#9-evaluation-system)
-- [10. Dual Worker Pool Strategy](#10-dual-worker-pool-strategy)
+- [10. Worker Pool Configuration](#10-worker-pool-configuration)
 - [11. Key Hyperparameters](#11-key-hyperparameters)
 - [12. Quick Start](#12-quick-start)
 
@@ -37,7 +37,7 @@
 
 Existing multi-agent systems fall into two categories:
 
-1. **Fixed pipelines** — always run the same sequence of agents regardless of task complexity (e.g., always: refiner -> decomposer -> executor -> critic -> synthesizer). This is wasteful for simple tasks and inflexible for novel ones.
+1. **Fixed pipelines** — always run the same sequence of agents regardless of task complexity (e.g., always: decomposer -> executor -> critic -> synthesizer). This is wasteful for simple tasks and inflexible for novel ones.
 
 2. **Open-loop planners** (e.g., Conductor) — a strong LLM generates a complete execution plan upfront, then all agents execute in parallel. The planner never sees intermediate results and cannot adapt.
 
@@ -109,10 +109,11 @@ This creates a closed-loop feedback system:
                     │
     Dispatches to the correct agent via OpenAI-compatible API
                     │
-    ┌───────┬───────┼───────┬──────────┬────────────┐
-    │       │       │       │          │            │
- refiner  decomp  exec_   exec_    critic      synth
-          oser    cheap   strong                esizer
+    ┌──────────┬───────┼───────┬────────────┐
+    │          │       │       │            │
+ executor   decomp  critic  synth
+ (tier:     oser            esizer
+  strong|weak)
 ```
 
 **The training loop** (GRPO):
@@ -135,12 +136,13 @@ OrchestratorR1/
 ├── orchestrator_r1/              # Core Python package
 │   ├── agent_pool/
 │   │   ├── base_agent.py         # OpenAI-compatible API wrapper (retry + cost tracking)
-│   │   └── agent_registry.py     # 6-agent dispatch table, dual worker pools
+│   │   └── agent_registry.py     # 4-agent dispatch table, strong worker pool
 │   ├── orchestrator/
 │   │   ├── parser.py             # XML tag parser + format validator
 │   │   ├── reward.py             # Composite reward R(τ) computation
 │   │   ├── generation.py         # Reactive multi-turn generation loop (CORE)
-│   │   └── generation_openloop.py  # Open-loop ablation (plan-then-execute)
+│   │   ├── generation_openloop.py  # Open-loop ablation (plan-then-execute)
+│   │   └── context_manager.py    # Context compression (budget check + middle-turn summarization)
 │   └── prompts/
 │       └── system_prompt.py      # Full system prompt with agent descriptions
 │
@@ -173,26 +175,29 @@ OrchestratorR1/
 
 ## 4. Agent Pool Design
 
-The orchestrator has 6 specialized agents, each backed by a different LLM via OpenAI-compatible API:
+The orchestrator has 4 specialized agents, each backed by a strong LLM via OpenAI-compatible API. Role definitions are human priors, but invocation timing, ordering, sub-query formulation, and verification decisions are all emergent from RL.
 
 | Agent | Role | When to Use |
 |-------|------|-------------|
-| **refiner** | Rewrites queries for better retrieval | When the question has implicit references or multi-hop dependencies |
+| **executor** | Task execution (supports `tier="strong"` and `tier="weak"`) | Factual queries, reasoning, code — tier selected by the orchestrator based on perceived difficulty |
 | **decomposer** | Breaks complex tasks into subtasks | When the task has multiple independent steps |
-| **executor_cheap** | Fast, low-cost task execution | Straightforward factual queries, simple code |
-| **executor_strong** | High-quality, expensive execution | Hard reasoning, complex code, detailed analysis |
 | **critic** | Quality verification | When result quality is uncertain or critical |
 | **synthesizer** | Merges multiple partial results | After executing multiple subtasks |
+
+The orchestrator handles query rewriting in its own `<think>` reasoning (no separate refiner agent). The executor supports a `tier` attribute: `<call type="executor" tier="strong">` routes to a frontier model, while `<call type="executor" tier="weak">` (or no tier) routes to a cost-efficient model.
 
 Each agent has a dedicated system prompt that defines its behavior (defined in `agent_registry.py`). For example:
 
 ```python
 AGENT_SYSTEM_PROMPTS = {
-    "refiner": (
-        "You are a search query optimization expert. Rewrite the given question or task "
-        "into a better-phrased query that will yield more accurate and relevant results. "
-        "Techniques: decompose implicit constraints, add context keywords, resolve pronouns "
-        "and references, rephrase for specificity. Output only the rewritten query, nothing else."
+    "executor": (
+        "You are a versatile task execution agent. Answer the given question or complete the "
+        "given task accurately and concisely. Provide only the answer or result, nothing else."
+    ),
+    "decomposer": (
+        "You are a task decomposition expert. Break the given complex question or task into "
+        "smaller, independent subtasks that can be solved individually. Output a numbered list "
+        "of subtasks, nothing else."
     ),
     "critic": (
         "You are a strict quality reviewer. Evaluate the given result for correctness, "
@@ -204,7 +209,6 @@ AGENT_SYSTEM_PROMPTS = {
         "complete, and well-structured final answer. Eliminate redundancy and ensure consistency. "
         "Output only the final combined result."
     ),
-    # ... (decomposer, executor_cheap, executor_strong similarly defined)
 }
 ```
 
@@ -232,13 +236,13 @@ The orchestrator model communicates with the system via structured XML tags:
 Subtask 2: When was this treaty signed?
 Subtask 3: Who was the US president at that time?</information>
 
-<think>The decomposer broke it into 3 parts. Let me use a cheap executor for this factual chain.</think>
+<think>The decomposer broke it into 3 parts. This is a straightforward factual chain, so a weak executor should suffice.</think>
 
-<call type="executor_cheap">What treaty ended World War I and when was it signed?</call>
+<call type="executor" tier="weak">What treaty ended World War I and when was it signed?</call>
 
 <information>The Treaty of Versailles was signed on June 28, 1919.</information>
 
-<call type="executor_cheap">Who was the US president in June 1919?</call>
+<call type="executor" tier="weak">Who was the US president in June 1919?</call>
 
 <information>Woodrow Wilson was the US president in June 1919.</information>
 
@@ -257,7 +261,7 @@ The parser extracts structured information from the model's raw text output.
 
 ```python
 VALID_AGENT_TYPES = {
-    "refiner", "decomposer", "executor_cheap", "executor_strong", "critic", "synthesizer"
+    "executor", "decomposer", "critic", "synthesizer"
 }
 
 STOP_TOKENS = ["</call>", "</answer>"]
@@ -401,6 +405,9 @@ def rollout(self, user_input: str) -> RolloutResult:
                 response = response[:self.config.max_obs_length] + "..."
             # KEY STEP: inject agent response back into context for the model to read
             context += f"\n<information>{response}</information>\n"
+            # Context compression: if context exceeds budget, preserve system prompt +
+            # original query + recent turns, summarize/truncate middle information blocks
+            context = self._compress_if_needed(context)
             continue   # <-- loop back: model will see the response and decide next action
 
         # Step 3b: If model produced a final answer -> return
@@ -426,7 +433,7 @@ def rollout(self, user_input: str) -> RolloutResult:
 **Why this design matters:**
 
 - After `context += f"\n<information>{response}</information>\n"`, the model's next `_generate_step()` call sees the agent's response in its context window
-- This allows the model to **react** to unexpected results: call a critic if the answer looks wrong, call a refiner if the query needs rephrasing, or simply output `<answer>` if the result is satisfactory
+- This allows the model to **react** to unexpected results: call a critic if the answer looks wrong, rephrase the query in its own reasoning, or simply output `<answer>` if the result is satisfactory
 - The `continue` statement means the loop goes back to the top, generating a new segment that can contain another `<call>` or an `<answer>`
 - The model learns through RL which reaction patterns yield higher rewards
 
@@ -630,55 +637,59 @@ def compute_f1(pred: str, gold: Union[str, list]) -> float:
 
 ### 6.5 Agent Registry & Dispatch (`agent_registry.py`)
 
-The registry maps agent type names to concrete API models. It supports **two worker pools** for the dual evaluation strategy.
+The registry maps agent type names to concrete API models. A single **strong worker pool** is used for both training and evaluation, enabling controlled comparison with Conductor on the same worker quality.
 
-**Cheap pool** (used during training + cost-efficient evaluation):
+**Strong worker pool** (used for both training and evaluation):
 
 ```python
 AGENT_MODEL_CONFIG = {
-    "refiner":         ("gpt-4o-mini",       0.15),   # cost per 1M tokens (USD)
-    "decomposer":      ("gpt-4o",            2.50),
-    "executor_cheap":  ("gpt-4o-mini",       0.15),
-    "executor_strong": ("claude-sonnet-4-6", 3.00),
-    "critic":          ("gemini-2.5-flash",  0.15),
-    "synthesizer":     ("gpt-4o-mini",       0.15),
+    "executor":    {"strong": ("claude-sonnet-4-6", 3.00),   # cost per 1M tokens (USD)
+                    "weak":   ("gpt-4o-mini",       0.15)},
+    "decomposer":  ("gemini-2.5-pro",    1.25),
+    "critic":      ("gpt-4o",            2.50),
+    "synthesizer": ("gpt-4o",            2.50),
 }
 ```
 
-**Matched pool** (frontier models, for fair comparison with Conductor):
-
-```python
-AGENT_MODEL_CONFIG_MATCHED = {
-    "refiner":         ("claude-sonnet-4",   3.00),
-    "decomposer":      ("gemini-2.5-pro",    1.25),
-    "executor_cheap":  ("qwen3-32b",         0.50),
-    "executor_strong": ("gpt-5",            10.00),
-    "critic":          ("deepseek-r1-32b",   0.50),
-    "synthesizer":     ("gemma3-27b",        0.30),
-}
-```
+The executor agent supports a `tier` attribute parsed from the `<call>` tag. When `tier="strong"`, it routes to a frontier model (Claude Sonnet 4); when `tier="weak"` or unspecified, it routes to a cost-efficient model (GPT-4o-mini). Cheap worker pool experiments are deferred to appendix/future work.
 
 **Dispatch mechanism:**
 
 ```python
 class AgentRegistry:
-    def __init__(self, api_base: str, api_key: str, worker_pool: str = "cheap"):
-        pool = WORKER_POOLS.get(worker_pool, AGENT_MODEL_CONFIG)
+    def __init__(self, api_base: str, api_key: str):
         self.agents: dict[str, BaseAgent] = {}
-        for agent_type, (model_name, cost) in pool.items():
-            self.agents[agent_type] = BaseAgent(
-                model_name=model_name,
-                cost_per_1m=cost,
-                system_prompt=AGENT_SYSTEM_PROMPTS[agent_type],
-                api_base=api_base,
-                api_key=api_key,
-            )
+        for agent_type, config in AGENT_MODEL_CONFIG.items():
+            if agent_type == "executor":
+                # Executor has tier-based dispatch (strong/weak)
+                for tier, (model_name, cost) in config.items():
+                    key = f"executor:{tier}"
+                    self.agents[key] = BaseAgent(
+                        model_name=model_name,
+                        cost_per_1m=cost,
+                        system_prompt=AGENT_SYSTEM_PROMPTS["executor"],
+                        api_base=api_base,
+                        api_key=api_key,
+                    )
+            else:
+                model_name, cost = config
+                self.agents[agent_type] = BaseAgent(
+                    model_name=model_name,
+                    cost_per_1m=cost,
+                    system_prompt=AGENT_SYSTEM_PROMPTS[agent_type],
+                    api_base=api_base,
+                    api_key=api_key,
+                )
 
-    def dispatch(self, agent_type: str, query: str) -> tuple[str, float]:
+    def dispatch(self, agent_type: str, query: str, tier: str = "weak") -> tuple[str, float]:
         """Dispatch a query to the specified agent. Returns (response_text, cost_usd)."""
-        if agent_type not in self.agents:
-            return f"[Unknown agent type: {agent_type}]", 0.0
-        return self.agents[agent_type].call(query)
+        if agent_type == "executor":
+            key = f"executor:{tier}"
+        else:
+            key = agent_type
+        if key not in self.agents:
+            return f"[Unknown agent type: {key}]", 0.0
+        return self.agents[key].call(query)
 
     def dispatch_batch(self, calls: list[dict]) -> list[tuple[str, float]]:
         """Dispatch multiple agent calls in parallel (up to 10 concurrent threads)."""
@@ -748,9 +759,9 @@ The system prompt teaches the orchestrator model its role, available agents, out
 
 Key rules in the prompt:
 1. Always start with `<think>` to reason about complexity
-2. For simple tasks: go directly to `executor_cheap` or `executor_strong`
+2. For simple tasks: go directly to `executor` (weak tier) or `executor` (strong tier)
 3. For complex tasks: consider using `decomposer` first
-4. Use `refiner` to rewrite queries with implicit references
+4. Use `<think>` reasoning to rewrite queries with implicit references (no separate refiner)
 5. Use `critic` only when result quality is critical
 6. Use `synthesizer` when combining results from multiple executor calls
 7. End every response with `<answer>...</answer>`
@@ -766,22 +777,20 @@ Key rules in the prompt:
 
 **Problem**: A pretrained LLM doesn't know the `<think>/<call>/<answer>` XML format. If we start GRPO directly, the model outputs garbage and gets -1.0 rewards (format penalty), learning nothing useful.
 
-**Solution**: Supervised Fine-Tuning on ~200 auto-generated traces that cover all 6 agent types.
+**Solution**: Supervised Fine-Tuning on ~200 auto-generated traces that cover all 4 agent types (executor with both tiers, decomposer, critic, synthesizer).
 
 **How SFT data is generated** (`prepare_sft.py`):
 
-GPT-4o generates orchestration traces using 8 carefully designed path patterns:
+GPT-4o generates orchestration traces using 6 carefully designed path patterns:
 
 | Pattern | Count | Agent Path |
 |---------|-------|------------|
-| `simple_direct` | 40 | think -> executor_cheap -> answer |
-| `refine_then_exec` | 25 | think -> refiner -> executor_cheap -> answer |
-| `strong_direct` | 20 | think -> executor_strong -> answer |
-| `decompose_exec_synth` | 35 | think -> decomposer -> executor_cheap x2-3 -> synthesizer -> answer |
-| `decompose_strong_critic` | 30 | think -> decomposer -> executor_strong -> critic -> answer |
-| `full_pipeline` | 20 | think -> decomposer -> executor_strong -> critic -> executor_strong -> answer |
-| `code_simple` | 15 | think -> executor_cheap -> answer (code tasks) |
-| `code_complex` | 15 | think -> decomposer -> executor_strong -> critic -> answer (code tasks) |
+| `simple_direct` | 40 | think -> executor(weak) -> answer |
+| `strong_direct` | 30 | think -> executor(strong) -> answer |
+| `decompose_exec_synth` | 40 | think -> decomposer -> executor(weak) x2-3 -> synthesizer -> answer |
+| `decompose_strong_critic` | 35 | think -> decomposer -> executor(strong) -> critic -> answer |
+| `full_pipeline` | 25 | think -> decomposer -> executor(strong) -> critic -> executor(strong) -> answer |
+| `code_complex` | 30 | think -> decomposer -> executor(strong) -> critic -> answer (code tasks) |
 
 Each generated trace is validated:
 - Must have `<think>`, at least one `<call>`, and `<answer>` tags
@@ -805,11 +814,21 @@ sft_config = SFTConfig(
 
 ---
 
-### 7.2 Stage 1: GRPO Reinforcement Learning
+### 7.2 Stages 1-3: Progressive GRPO Reinforcement Learning
 
 GRPO (Group Relative Policy Optimization) is a variant of PPO that doesn't need a separate value network. Instead, it computes advantages relative to other completions sampled for the same prompt.
 
-**GRPO training configuration:**
+Training uses a **3-stage progressive curriculum** that gradually increases task complexity and turn budget:
+
+| Stage | max_turns | Data Mix | Purpose |
+|-------|-----------|----------|---------|
+| Stage 1 | 2 | Simple QA (NQ, TriviaQA, PopQA) | Learn basic call/answer patterns with 1-2 agent calls |
+| Stage 2 | 4 | Multi-hop (HotpotQA, 2Wiki, MuSiQue) | Learn decomposition, critic, and multi-step reasoning |
+| Stage 3 | 6 | Full mix (all sources + code) | Learn full orchestration with all agent types and tiers |
+
+Each stage initializes from the previous stage's checkpoint. This progressive approach prevents the model from being overwhelmed by complex multi-turn trajectories before it has mastered basic agent invocation.
+
+**GRPO training configuration** (shared across stages, with per-stage overrides for max_turns and data):
 
 ```python
 grpo_config = GRPOConfig(
@@ -875,7 +894,7 @@ def build_reward_fn(registry, gen_manager_ref, args):
     return reward_fn
 ```
 
-**Why real API calls in training**: The cost signal must be real. If we simulated costs, the model would learn to exploit the simulation rather than learning to minimize actual API spending. The model must experience the actual trade-off: calling `executor_strong` (Claude Sonnet, $3.00/1M) gives better answers but incurs a heavier cost penalty than `executor_cheap` (GPT-4o-mini, $0.15/1M).
+**Why real API calls in training**: The cost signal must be real. If we simulated costs, the model would learn to exploit the simulation rather than learning to minimize actual API spending. The model must experience the actual trade-off: calling `executor` with `tier="strong"` (Claude Sonnet, $3.00/1M) gives better answers but incurs a heavier cost penalty than `executor` with `tier="weak"` (GPT-4o-mini, $0.15/1M).
 
 ---
 
@@ -921,9 +940,9 @@ HumanEval (164 problems) and MBPP (374 train / 500 test), stored with test cases
 
 Auto-generates ~200 orchestration traces by:
 1. Sampling real questions from the QA/code training pools
-2. Calling GPT-4o with path-pattern-specific instructions (8 patterns, as described in 7.1)
+2. Calling GPT-4o with path-pattern-specific instructions (6 patterns, as described in 7.1)
 3. Validating every trace for format correctness
-4. Distributing coverage proportionally across all 8 path patterns
+4. Distributing coverage proportionally across all 6 path patterns
 
 ---
 
@@ -959,31 +978,30 @@ def compute_metric(pred: str, record: dict) -> dict:
 
 | Baseline | Description | Agent Calls |
 |----------|-------------|-------------|
-| **Direct-Strong** | Send query directly to executor_strong (e.g., Claude Sonnet) | 1 |
-| **Direct-Cheap** | Send query directly to executor_cheap (e.g., GPT-4o-mini) | 1 |
-| **Fixed-Pipeline** | Always run full 6-step pipeline regardless of complexity | 5-6 |
+| **Direct-Strong** | Send query directly to executor (strong tier, e.g., Claude Sonnet) | 1 |
+| **Direct-Cheap** | Send query directly to executor (weak tier, e.g., GPT-4o-mini) | 1 |
+| **Fixed-Pipeline** | Always run full 4-step pipeline regardless of complexity | 3-4 |
 | **Self-Reflection** | 5 rounds of self-critique with same model (GPT-4o) | 5 |
 | **Open-Loop** | OrchestratorR1 model but plan-then-execute (no reactive feedback) | varies |
 
-The fixed pipeline always runs: refiner -> decomposer -> executor_strong -> critic -> (optional retry if critic found issues) -> synthesizer. This baseline tests whether a static "always do everything" approach can match learned, adaptive orchestration.
+The fixed pipeline always runs: decomposer -> executor(strong) -> critic -> (optional retry if critic found issues) -> synthesizer. This baseline tests whether a static "always do everything" approach can match learned, adaptive orchestration.
 
 ---
 
-## 10. Dual Worker Pool Strategy
+## 10. Worker Pool Configuration
 
-To address the comparison with Conductor (which uses frontier-level worker models like GPT-5):
+A single **strong worker pool** is used for both training and evaluation. This enables a controlled comparison with Conductor on the same worker quality, isolating the **reactive vs. open-loop** variable rather than competing on absolute scores.
 
-**Cheap pool** (training + cost-efficiency experiments):
-- Uses GPT-4o-mini, GPT-4o, Claude Sonnet 4, Gemini Flash
-- Demonstrates that a small RL-trained orchestrator achieves strong results even with cheap workers
-- Total cost per query: typically < $0.001
+**Strong worker pool:**
+- **executor (strong tier):** Claude Sonnet 4 ($3.00/1M tokens)
+- **executor (weak tier):** GPT-4o-mini ($0.15/1M tokens)
+- **decomposer:** Gemini 2.5 Pro ($1.25/1M tokens)
+- **critic:** GPT-4o ($2.50/1M tokens)
+- **synthesizer:** GPT-4o ($2.50/1M tokens)
 
-**Matched pool** (fair comparison):
-- Uses GPT-5, Claude Sonnet 4, Gemini 2.5 Pro, DeepSeek-R1-32B, Qwen3-32B, Gemma3-27B
-- Matches Conductor's worker quality to isolate the **reactive vs. open-loop** variable
-- The argument: when workers are equal, reactive orchestration >= open-loop planning
+The orchestrator learns through RL when to use the strong vs. weak executor tier. The cost penalty in the reward function (alpha * C_cost) incentivizes the model to prefer the weak tier for straightforward queries and reserve the strong tier for hard reasoning or critical sub-tasks.
 
-**Key finding (expected)**: The orchestration policy transfers zero-shot across worker pools. A model trained on cheap workers learns agent selection strategies that also work with frontier workers, because the strategies are about *when* to decompose, *when* to critique, etc. -- not about the specific capabilities of any worker model.
+**Cheap worker pool experiments** (all agents backed by GPT-4o-mini or Gemini Flash) are deferred to appendix/future work. The key argument: when worker quality is held constant between OrchestratorR1 and Conductor, reactive orchestration should match or exceed open-loop planning because it can adapt to intermediate results.
 
 ---
 
@@ -1086,23 +1104,37 @@ accelerate launch --config_file training/accelerate_fsdp_4gpu.yaml \
     --output_dir checkpoints/sft_warmup_3b \
     --num_epochs 5 --use_lora
 
-# Stage 1: GRPO RL training
+# Stage 1: GRPO (simple QA, max_turns=2)
 bash training/train_flex.sh --gpu 3090 --lora \
     MODEL_PATH=checkpoints/sft_warmup_3b \
+    DATA_PATH=data/train_simple.jsonl \
+    OUTPUT_DIR=checkpoints/orch_grpo_3b_stage1 \
+    MAX_TURNS=2
+
+# Stage 2: GRPO (multi-hop, max_turns=4)
+bash training/train_flex.sh --gpu 3090 --lora \
+    MODEL_PATH=checkpoints/orch_grpo_3b_stage1 \
+    DATA_PATH=data/train_multihop.jsonl \
+    OUTPUT_DIR=checkpoints/orch_grpo_3b_stage2 \
+    MAX_TURNS=4
+
+# Stage 3: GRPO (full mix, max_turns=6)
+bash training/train_flex.sh --gpu 3090 --lora \
+    MODEL_PATH=checkpoints/orch_grpo_3b_stage2 \
     DATA_PATH=data/train_mixed.jsonl \
-    OUTPUT_DIR=checkpoints/orch_grpo_3b_seed1
+    OUTPUT_DIR=checkpoints/orch_grpo_3b_stage3 \
+    MAX_TURNS=6
 ```
 
 ### Evaluate
 
 ```bash
-# OrchestratorR1 (cheap worker pool)
+# OrchestratorR1
 python eval/eval_orchestrator.py \
-    --model_path checkpoints/orch_grpo_3b_seed1/final \
+    --model_path checkpoints/orch_grpo_3b_stage3/final \
     --data_path data/test.jsonl \
     --api_base $API_BASE --api_key $API_KEY \
-    --worker_pool cheap \
-    --output eval/results/orch_r1_cheap.json
+    --output eval/results/orch_r1.json
 
 # Baselines
 python eval/baselines.py --method direct_strong --data_path data/test.jsonl --api_base $API_BASE --api_key $API_KEY --output eval/results/direct_strong.json
@@ -1113,7 +1145,7 @@ python eval/baselines.py --method fixed_pipeline --data_path data/test.jsonl --a
 
 ```bash
 python inference/infer.py \
-    --model_path checkpoints/orch_grpo_3b_seed1/final \
+    --model_path checkpoints/orch_grpo_3b_stage3/final \
     --api_base $API_BASE --api_key $API_KEY \
     --input "Who was the president when the treaty that ended WWI was signed?"
 ```

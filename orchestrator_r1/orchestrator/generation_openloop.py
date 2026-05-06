@@ -82,13 +82,21 @@ class OpenLoopGenerationManager:
         return self.tokenizer.decode(new_ids, skip_special_tokens=True)
 
     def _extract_all_calls(self, text: str) -> List[dict]:
-        """Extract all <call type="X">query</call> from generated text."""
+        """Extract all <call type="X" [tier="Y"]>query</call> from generated text."""
         calls = []
-        for m in re.finditer(r'<call\s+type="(\w+)"[^>]*>(.*?)</call>', text, re.DOTALL):
+        for m in re.finditer(r'<call\s+type="(\w+)"([^>]*)>(.*?)</call>', text, re.DOTALL):
             agent_type = m.group(1).strip()
-            query = m.group(2).strip()
+            attrs = m.group(2)
+            query = m.group(3).strip()
             if agent_type in VALID_AGENT_TYPES:
-                calls.append({"agent_type": agent_type, "query": query})
+                call = {"agent_type": agent_type, "query": query}
+                if agent_type == "executor":
+                    tier_match = re.search(r'tier="(\w+)"', attrs)
+                    call["tier"] = (
+                        tier_match.group(1) if tier_match and tier_match.group(1) in {"strong", "weak"}
+                        else "weak"
+                    )
+                calls.append(call)
         return calls
 
     def rollout(self, user_input: str) -> RolloutResult:
@@ -134,6 +142,7 @@ class OpenLoopGenerationManager:
             total_cost += cost
             agent_calls.append({
                 "agent_type": call["agent_type"],
+                "tier": call.get("tier"),
                 "query": call["query"],
                 "cost": cost,
                 "turn": 0,  # all in "turn 0" since it's open-loop

@@ -1,16 +1,18 @@
 """
-Orchestrator-R1 GRPO Training Script
+Orchestrator-R1 GRPO Training Script (Progressive Curriculum)
 
 Supports three modes on Windows:
   1. LoRA (DDP+Gloo):       train_lora.bat   — ~8GB/GPU, fast experiments
   2. Full-param (ZeRO-2):   train_full.bat   — ~16.5GB/GPU, full capacity
   3. FSDP (Linux/WSL2 only): train.sh         — requires NCCL
 
+Progressive GRPO: train in 3 stages with increasing horizon
+  Stage 1 (--progressive_stage 1 --max_turns 2): simple QA, learn basic routing
+  Stage 2 (--progressive_stage 2 --max_turns 4): multi-hop, learn decompose+synth
+  Stage 3 (--progressive_stage 3 --max_turns 6): full mix, learn critic+long chain
+
 Usage (Windows LoRA):
     training\\train_lora.bat
-
-Usage (Windows Full-param):
-    training\\train_full.bat
 """
 
 import argparse
@@ -42,7 +44,14 @@ def parse_args():
     parser.add_argument("--num_generations",     type=int, default=8,
                         help="G in GRPO: rollouts per prompt")
     parser.add_argument("--max_completion_length", type=int, default=512)
-    parser.add_argument("--max_turns",           type=int, default=6)
+    parser.add_argument("--max_turns",           type=int, default=6,
+                        help="Max orchestration turns. Used together with "
+                             "--progressive_stage to set the curriculum horizon.")
+    parser.add_argument("--progressive_stage",   type=int, default=3, choices=[1, 2, 3],
+                        help="Progressive GRPO curriculum stage: "
+                             "1=simple-QA/max_turns~2, 2=multi-hop/max_turns~4, "
+                             "3=full-mix/max_turns~6. Affects run name only — "
+                             "the actual horizon is set by --max_turns.")
     parser.add_argument("--learning_rate",       type=float, default=1e-6)
     parser.add_argument("--num_epochs",          type=int, default=3)
     parser.add_argument("--alpha",               type=float, default=0.3,
@@ -96,24 +105,33 @@ def build_reward_fn(registry: AgentRegistry, gen_manager_ref: dict, args):
         rewards = []
 
         for prompt, completion, gold in zip(prompts, completions, gold_answers):
-            # Run generation loop starting from existing completion
-            # (GRPO already produced the completion — we need to execute agent calls)
             agent_calls = []
             total_cost = 0.0
             n_turns = 0
             full_response = completion
 
-            # Parse all <call> tags in the completion and execute them
+            # Parse all <call> tags in the completion and execute them.
+            # Pattern captures: agent_type, attribute string, query body.
             import re
             call_pattern = re.compile(
-                r'<call\s+type="(\w+)"[^>]*>(.*?)</call>', re.DOTALL
+                r'<call\s+type="(\w+)"([^>]*)>(.*?)</call>', re.DOTALL
             )
+            tier_pattern = re.compile(r'tier="(\w+)"')
             for match in call_pattern.finditer(completion):
                 agent_type = match.group(1)
-                query = match.group(2).strip()
-                _, cost = registry.dispatch(agent_type, query)
+                attrs = match.group(2)
+                query = match.group(3).strip()
+                tier = None
+                if agent_type == "executor":
+                    tier_match = tier_pattern.search(attrs)
+                    tier = tier_match.group(1) if tier_match else "weak"
+                _, cost = registry.dispatch(agent_type, query, tier=tier)
                 total_cost += cost
-                agent_calls.append({"agent_type": agent_type, "cost": cost})
+                agent_calls.append({
+                    "agent_type": agent_type,
+                    "tier": tier,
+                    "cost": cost,
+                })
                 n_turns += 1
 
             result = compute_reward(
@@ -216,7 +234,10 @@ def main():
         save_total_limit=2,
         save_only_model=True,          # skip optimizer states (~28GB saved per checkpoint)
         report_to="wandb",
-        run_name=f"orchestrator-r1-alpha{args.alpha}-beta{args.beta}",
+        run_name=(
+            f"orchestrator-r1-stage{args.progressive_stage}"
+            f"-mt{args.max_turns}-a{args.alpha}-b{args.beta}"
+        ),
         warmup_ratio=0.05,
         lr_scheduler_type="cosine",
         remove_unused_columns=False,

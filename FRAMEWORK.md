@@ -12,12 +12,15 @@
   │    自适应选择编排路径    │
   └────────────────────────┘
            │ 按需调用（0~6 次，由 RL 涌现决定）
+           │ 上下文超预算时触发压缩（保留首尾，摘要中间）
            ▼
   ┌──────────────────────────────────────────────────┐
   │                   Agent Pool P                   │
-  │  refiner │ decomposer │ executor_cheap           │
-  │  critic  │ synthesizer│ executor_strong          │
+  │  executor (strong/weak) │ decomposer             │
+  │  critic                 │ synthesizer            │
   │  （固定 API 端点，不参与训练）                      │
+  │  Worker Pool: Claude Sonnet 4 / Gemini 2.5 Pro   │
+  │               / GPT-4o                           │
   └──────────────────────────────────────────────────┘
            │ 返回 <information>
            ▼
@@ -38,17 +41,19 @@
       Orchestrator π_θ 优化
 ```
 
+### 设计原则
+
+**角色是人工先验，调用策略由 RL 涌现。** 四个角色（executor / decomposer / critic / synthesizer）编码了不同的认知功能，这是人工设计的。但何时调用每个角色、以什么顺序、用什么子查询、是否调用 critic 进行验证，都完全由 RL 奖励景观涌现。
+
 ### 涌现的自适应路径
 
 ```
-简单事实题:    think → executor_cheap → answer                        (1 轮)
-隐含引用:      think → refiner → executor_cheap → answer              (2 轮)
-多跳推理:      think → decomposer → executor×N → synthesizer → answer (3~5 轮)
-复杂代码:      think → decomposer → executor_strong×N → critic → answer(4~6 轮)
+简单事实题:    think → executor → answer                                (1 轮)
+多跳推理:      think → decomposer → executor×N → synthesizer → answer   (3~5 轮)
+复杂代码:      think → decomposer → executor(strong)×N → critic → answer(4~6 轮)
 ```
 
 路径不是人工设计的 if-else，而是 RL 训练后模型自发涌现的行为。
-
 ---
 
 ## 目录结构
@@ -67,15 +72,16 @@ OrchestratorR1/
 │   │
 │   ├── agent_pool/
 │   │   ├── base_agent.py            # Agent 基类：API 调用、重试、计费
-│   │   └── agent_registry.py       # 6 种 Agent 注册 + 统一调度接口
+│   │   └── agent_registry.py       # 4 种 Agent 注册 + 统一调度接口
 │   │
 │   └── orchestrator/
 │       ├── parser.py                # 解析 <call>/<answer> 标签，格式验证
 │       ├── reward.py                # 统一奖励函数 R(τ) + EM/F1 计算
-│       └── generation.py           # 多轮生成主循环（推理 + 训练 rollout）
+│       ├── context_manager.py      # 上下文压缩：budget 检查 + 中间 information 摘要
+│       └── generation.py           # 多轮生成主循环（推理 + 训练 rollout + 上下文压缩）
 │
 ├── training/
-│   ├── train.py                     # GRPO 训练入口（trl GRPOTrainer）
+│   ├── train.py                     # GRPO 训练入口（trl GRPOTrainer，支持渐进式训练）
 │   ├── sft_warmup.py               # SFT 热身：教模型学会 <call> 标签格式
 │   ├── train.sh                     # 4×RTX3090 启动脚本
 │   └── accelerate_fsdp_4gpu.yaml   # FSDP ZeRO-2 配置（bf16，4卡）
@@ -130,7 +136,7 @@ HuggingFace 数据集
 └─ SFT 热身
        │ prepare_sft.py
        ▼
-   data/sft_warmup.jsonl  (50~100 条覆盖全部 Agent 类型的示例)
+   data/sft_warmup.jsonl  (50~100 条覆盖全部 4 种 Agent 类型的示例)
 ```
 
 ### 训练流程
@@ -139,14 +145,28 @@ HuggingFace 数据集
 阶段 0: SFT 热身
    data/sft_warmup.jsonl → sft_warmup.py → checkpoints/sft_warmup/
 
-阶段 1: GRPO 主训练
-   data/train.jsonl + train_code.jsonl
-       → train.py（GRPO, G=8）
-       → 每条 prompt 生成 8 条轨迹
-       → 实际调用 Agent API 获取 <information>
-       → compute_reward 计算奖励
-       → GRPO 策略更新
+阶段 1: 渐进式 GRPO — Stage 1 (max_turns=2)
+   data/train_simple_qa.jsonl（简单 QA 子集）
+       → train.py --progressive_stage 1 --max_turns 2
+       → 学会基本的 call 格式和单步路由
+       → checkpoints/orch_grpo_stage1/
+
+阶段 2: 渐进式 GRPO — Stage 2 (max_turns=4)
+   data/train_multihop.jsonl（加入多跳推理数据）
+       → train.py --progressive_stage 2 --max_turns 4
+       → 学会 decompose → execute → synthesize
+       → checkpoints/orch_grpo_stage2/
+
+阶段 3: 渐进式 GRPO — Stage 3 (max_turns=6)
+   data/train.jsonl + train_code.jsonl（全量混合数据）
+       → train.py --progressive_stage 3 --max_turns 6
+       → 学会 critic 验证、错误恢复、长链编排
        → checkpoints/orchestrator_r1/final/
+
+每条 prompt 生成 G=8 条轨迹
+实际调用 Agent API（strong worker pool）获取 <information>
+上下文超预算时触发压缩（保留任务描述+最近交互，摘要中间 information）
+compute_reward 计算奖励 → GRPO 策略更新
 ```
 
 ### 评估流程
@@ -175,18 +195,28 @@ eval/results/orchestrator_r1_grpo.json
 3. 解析 `<call type="X">query</call>` 标签
 4. 通过 AgentRegistry 调用对应 Agent API
 5. 将 Agent 返回以 `<information>` 注入上下文
-6. 循环步骤 2~5 直到出现 `<answer>` 或达到 max_turns
-7. 返回完整轨迹 GenerationResult（含 answer、agent_calls、cost、turns）
+6. **上下文预算检查**：如果总 token 数超过阈值（max_prompt_length × 80%），触发压缩——保留系统提示 + 原始 query + 最近 1-2 轮完整交互，对中间 `<information>` 块做截断或摘要
+7. 循环步骤 2~6 直到出现 `<answer>` 或达到 max_turns
+8. 返回完整轨迹 GenerationResult（含 answer、agent_calls、cost、turns）
 
 **训练和推理共用同一主循环**，区别仅在于 GRPO 需要采样 G=8 条不同轨迹。
+
+### `orchestrator_r1/orchestrator/context_manager.py`
+
+上下文压缩模块：
+
+- `check_budget(context, max_tokens)` → 判断是否超预算
+- `compress(context, keep_system=True, keep_recent_turns=2)` → 保留首尾，对中间 information 块做截断（默认）或摘要
+- 压缩策略：优先截断（快速、确定性），可选摘要（调用 executor_cheap 做一句话总结）
 
 ### `orchestrator_r1/agent_pool/agent_registry.py`
 
 Agent 注册表，提供统一的 `dispatch(agent_type, query) → (response, cost)` 接口：
 
+- 4 种 Agent 角色：executor（支持 strong/weak 档位）、decomposer、critic、synthesizer
 - 每种 Agent 有独立的系统提示（定义其角色）
-- 每种 Agent 映射到不同的 LLM API（定义其能力和成本）
-- 训练模式下可统一降级为 executor_cheap 以控制 API 成本
+- 每种 Agent 映射到 strong worker pool 中的 LLM API（Claude Sonnet 4 / Gemini 2.5 Pro / GPT-4o）
+- executor 支持通过 `<call type="executor" tier="strong">` 或 `<call type="executor" tier="weak">` 指定模型档位
 
 ### `orchestrator_r1/orchestrator/reward.py`
 
@@ -218,6 +248,7 @@ R = R_outcome − α·C_cost − β·C_turns + γ·B_efficiency + R_format
 training/train.py
   ├── generation.py          ← rollout 生成 G=8 条轨迹
   │     ├── parser.py        ← 解析输出标签
+  │     ├── context_manager.py ← 上下文压缩
   │     └── agent_registry.py ← 调用 Agent API
   │           └── base_agent.py
   └── reward.py              ← 计算每条轨迹的 R(τ)
@@ -268,6 +299,8 @@ num_processes: 4
 
 *7B 模型需减小 G 至 4 或减小 max_new_tokens
 
+> **注意**：渐进式训练的前两阶段（max_turns=2/4）显存压力更小，可以用更大的 batch size 加速。
+
 ### 启动命令
 
 ```bash
@@ -278,14 +311,37 @@ accelerate launch --config_file training/accelerate_fsdp_4gpu.yaml \
     --data_path data/sft_warmup.jsonl \
     --output_dir checkpoints/sft_warmup
 
-# GRPO 主训练
+# 渐进式 GRPO — Stage 1 (max_turns=2, 简单 QA)
 accelerate launch --config_file training/accelerate_fsdp_4gpu.yaml \
     training/train.py \
     --model_path checkpoints/sft_warmup \
+    --data_path data/train_simple_qa.jsonl \
+    --api_base YOUR_API_BASE \
+    --api_key YOUR_API_KEY \
+    --output_dir checkpoints/orch_grpo_stage1 \
+    --max_turns 2 --progressive_stage 1 \
+    --alpha 0.3 --beta 0.1 --gamma 0.15
+
+# 渐进式 GRPO — Stage 2 (max_turns=4, 加入多跳)
+accelerate launch --config_file training/accelerate_fsdp_4gpu.yaml \
+    training/train.py \
+    --model_path checkpoints/orch_grpo_stage1/final \
+    --data_path data/train_multihop.jsonl \
+    --api_base YOUR_API_BASE \
+    --api_key YOUR_API_KEY \
+    --output_dir checkpoints/orch_grpo_stage2 \
+    --max_turns 4 --progressive_stage 2 \
+    --alpha 0.3 --beta 0.1 --gamma 0.15
+
+# 渐进式 GRPO — Stage 3 (max_turns=6, 全量混合)
+accelerate launch --config_file training/accelerate_fsdp_4gpu.yaml \
+    training/train.py \
+    --model_path checkpoints/orch_grpo_stage2/final \
     --data_path data/train.jsonl \
     --api_base YOUR_API_BASE \
     --api_key YOUR_API_KEY \
     --output_dir checkpoints/orchestrator_r1 \
+    --max_turns 6 --progressive_stage 3 \
     --alpha 0.3 --beta 0.1 --gamma 0.15
 ```
 
@@ -302,11 +358,12 @@ accelerate launch --config_file training/accelerate_fsdp_4gpu.yaml \
   Track 3 (代码):       HumanEval / MBPP
 
 基线:
-  Router-R1 (official)  → eval/results/router_r1.json
-  Direct GPT-4o         → eval/results/direct_strong.json
-  ReAct (Qwen2.5-3B)    → eval/results/react.json
-  Reflexion             → eval/results/reflexion.json
-  Fixed-Pipeline        → eval/results/fixed_pipeline.json
+  Conductor (同 worker pool) → eval/results/conductor.json
+  Router-R1 (official)       → eval/results/router_r1.json
+  Direct-Strong              → eval/results/direct_strong.json
+  ReAct (Qwen2.5-3B)         → eval/results/react.json
+  Self-Reflection 5-turn     → eval/results/self_reflection.json
+  Fixed-Pipeline             → eval/results/fixed_pipeline.json
 
 本方法:
   Orch-base (未训练)    → eval/results/orch_base.json
@@ -317,11 +374,16 @@ accelerate launch --config_file training/accelerate_fsdp_4gpu.yaml \
 ### 消融实验
 
 ```
-  w/o critic            → eval/results/ablation_no_critic.json
-  w/o decomposer        → eval/results/ablation_no_decomp.json
-  w/o refiner           → eval/results/ablation_no_refiner.json
-  Fixed-Pipeline        → eval/results/ablation_fixed.json
+  w/o reactive          → eval/results/ablation_no_reactive.json    ★★★
+  w/o critic            → eval/results/ablation_no_critic.json      ★★ 角色消融组
+  w/o decomposer        → eval/results/ablation_no_decomp.json      ★★ 角色消融组
+  w/o synthesizer       → eval/results/ablation_no_synth.json       ★★ 角色消融组
+  w/ refiner            → eval/results/ablation_add_refiner.json    ★★ 反向消融
+  w/o progressive       → eval/results/ablation_no_progressive.json
+  w/o context compress  → eval/results/ablation_no_compress.json
+  w/o cost penalty      → eval/results/ablation_alpha0.json
   SFT-only              → eval/results/ablation_sft_only.json
+  Fixed-Pipeline        → eval/results/ablation_fixed.json
 ```
 
 ### 超参敏感性
@@ -334,13 +396,14 @@ accelerate launch --config_file training/accelerate_fsdp_4gpu.yaml \
 ### 论文核心图表
 
 ```
-Table 1:  主结果表（3 Track × 5 基线 × 4 指标）
-Figure 1: 系统架构图
-Figure 2: Agent 调用分布热力图（证明自适应涌现）
-Figure 3: 效率-质量帕累托曲线（证明帕累托前沿优势）
-Figure 4: 训练过程中行为变化（证明 RL 驱动涌现）
-Table 2:  消融实验表
-Figure 5: α 敏感性分析
+Table 1:  主结果表（3 Track × 基线 × 4 指标）
+Table 2:  与 Conductor 同 worker pool controlled comparison（GPQA / LCB）
+Table 3:  Agent 角色消融（w/o critic / decomposer / synthesizer / w/ refiner）
+Table 4:  其余消融（reactive / progressive / SFT-only / Fixed-Pipeline）
+Figure 1: 系统架构图（4 角色）
+Figure 2: Agent 调用分布热力图（4 agents × N datasets，证明自适应涌现）
+Figure 3: 效率-质量帕累托曲线（α 调节调用频率/轮数）
+Figure 4: 训练过程中行为变化（渐进式三阶段 + RL 驱动涌现）
 ```
 
 ---
@@ -352,9 +415,11 @@ Figure 5: α 敏感性分析
 ```
   ✓ agent_pool + parser + reward
   ✓ 本地推理测试（infer.py）
+  → 收敛 agent pool 为 4 角色（executor / decomposer / critic / synthesizer）
+  → 实现 context_manager.py（上下文压缩模块）
   → 补写 training/sft_warmup.py（SFT 热身训练脚本）
   → 补写 data_process/prepare_code.py（HumanEval/MBPP 数据加载）
-  → 补写 data_process/prepare_sft.py（SFT 热身示例生成）
+  → 补写 data_process/prepare_sft.py（SFT 热身示例生成，覆盖 4 种 Agent）
   → 补写 eval/compare.py（多结果对比 → 表格 + 图）
   → 补写 eval/baselines.py（Router-R1 / ReAct / Direct 基线评估）
   → 准备 NQ + HotpotQA + HumanEval 训练/测试数据
@@ -364,11 +429,11 @@ Figure 5: α 敏感性分析
 ### 阶段 2（3 周）：训练 + 主实验
 
 ```
-  → 生成 SFT 热身数据（50~100 条，覆盖 6 种 Agent 类型）
+  → 生成 SFT 热身数据（50~100 条，覆盖 4 种 Agent 类型）
   → SFT 热身训练（1~2h）
-  → 4×3090 GRPO 主训练（12~20h）
+  → 渐进式 GRPO 三阶段训练（strong worker pool）
   → Track 1/2/3 三组评估（训练后模型）
-  → 基线复现：Router-R1 / ReAct / Reflexion / Direct-Strong
+  → 基线复现：Router-R1 / ReAct / Self-Reflection / Direct-Strong
   → eval/compare.py 生成主结果对比表
 ```
 

@@ -32,9 +32,6 @@ def parse_args():
     parser.add_argument("--output",      type=str, default="eval/results/orchestrator_r1.json")
     parser.add_argument("--max_turns",   type=int, default=6)
     parser.add_argument("--max_samples", type=int, default=None)
-    parser.add_argument("--worker_pool", type=str, default="cheap",
-                        choices=["cheap", "matched"],
-                        help="Worker pool configuration: 'cheap' or 'matched'")
     parser.add_argument("--device",      type=str, default="cuda")
     return parser.parse_args()
 
@@ -56,8 +53,7 @@ def main():
     ).to(args.device)
     model.eval()
 
-    registry = AgentRegistry(api_base=args.api_base, api_key=args.api_key,
-                              worker_pool=args.worker_pool)
+    registry = AgentRegistry(api_base=args.api_base, api_key=args.api_key)
     gen_config = GenerationConfig(max_turns=args.max_turns)
     manager = OrchestratorGenerationManager(model, tokenizer, registry, gen_config)
 
@@ -110,7 +106,6 @@ def main():
     n = len(results)
     summary = {
         "n_samples":    n,
-        "worker_pool":  args.worker_pool,
         "em":           total_em / n,
         "f1":           total_f1 / n,
         "avg_cost_usd": total_cost / n,

@@ -4,15 +4,19 @@ Agent Call Distribution Heatmap (T4.1)
 Generates a heatmap showing which agent types are invoked for each dataset,
 proving the orchestrator learns task-dependent routing strategies.
 
+The 4-role pool (executor / decomposer / critic / synthesizer) is visualized
+with the executor split into its weak/strong tiers to surface tier-selection
+behavior alongside role-selection behavior (5 columns total).
+
 Usage:
     python analysis/agent_distribution.py \
         --eval_json eval/results/orchestrator_r1.json \
         --output figures/heatmap_agent_distribution.pdf
 
-    # Side-by-side comparison (cheap vs matched):
+    # Side-by-side comparison (e.g. base vs trained):
     python analysis/agent_distribution.py \
-        --eval_json eval/results/orch_grpo_7b_cheap.json eval/results/orch_grpo_7b_matched.json \
-        --labels "Cheap Pool" "Matched Pool" \
+        --eval_json eval/results/orch_base.json eval/results/orch_grpo.json \
+        --labels "Base" "GRPO-trained" \
         --output figures/heatmap_agent_distribution_comparison.pdf
 """
 
@@ -33,21 +37,35 @@ except ImportError:
     sys.exit(1)
 
 
-# ── Data sources and agent types ──────────────────────────────────────────────
+# ── Data sources and agent columns ────────────────────────────────────────────
 
 SOURCES = ["nq", "triviaqa", "popqa", "hotpotqa", "2wikimultihop", "musique",
            "humaneval", "mbpp"]
 SOURCE_LABELS = ["NQ", "TriviaQA", "PopQA", "HotpotQA", "2Wiki", "MuSiQue",
                  "HumanEval", "MBPP"]
-AGENTS = ["refiner", "decomposer", "executor_cheap", "executor_strong",
-          "critic", "synthesizer"]
-AGENT_LABELS = ["Refiner", "Decomposer", "Exec-Cheap", "Exec-Strong",
-                "Critic", "Synthesizer"]
+
+# Each column is (agent_type, tier_or_None) — tier filter only applies to executor.
+AGENT_COLUMNS: list[tuple[str, str | None]] = [
+    ("executor",    "weak"),
+    ("executor",    "strong"),
+    ("decomposer",  None),
+    ("critic",      None),
+    ("synthesizer", None),
+]
+AGENT_LABELS = ["Exec-Weak", "Exec-Strong", "Decomposer", "Critic", "Synthesizer"]
+
+
+def _matches_column(call: dict, agent_type: str, tier: str | None) -> bool:
+    if call.get("agent_type") != agent_type:
+        return False
+    if tier is None:
+        return True
+    return call.get("tier") == tier
 
 
 def build_distribution_matrix(eval_data: dict) -> np.ndarray:
-    """Build a (n_sources x n_agents) frequency matrix from eval results."""
-    matrix = np.zeros((len(SOURCES), len(AGENTS)))
+    """Build a (n_sources x n_columns) frequency matrix from eval results."""
+    matrix = np.zeros((len(SOURCES), len(AGENT_COLUMNS)))
 
     for i, src in enumerate(SOURCES):
         src_results = [r for r in eval_data["results"] if r.get("source") == src]
@@ -55,19 +73,20 @@ def build_distribution_matrix(eval_data: dict) -> np.ndarray:
             continue
 
         total_calls = 0
-        agent_counts = {a: 0 for a in AGENTS}
+        col_counts = [0] * len(AGENT_COLUMNS)
 
         for r in src_results:
             calls = r.get("agent_calls", [])
             total_calls += len(calls)
             for c in calls:
-                agent_type = c.get("agent_type", "")
-                if agent_type in agent_counts:
-                    agent_counts[agent_type] += 1
+                for j, (agent_type, tier) in enumerate(AGENT_COLUMNS):
+                    if _matches_column(c, agent_type, tier):
+                        col_counts[j] += 1
+                        break
 
         if total_calls > 0:
-            for j, agent in enumerate(AGENTS):
-                matrix[i][j] = agent_counts[agent] / total_calls
+            for j in range(len(AGENT_COLUMNS)):
+                matrix[i][j] = col_counts[j] / total_calls
 
     return matrix
 
@@ -88,7 +107,7 @@ def plot_single_heatmap(matrix: np.ndarray, output_path: str, title: str = ""):
         linewidths=0.5,
         linecolor="white",
     )
-    ax.set_xlabel("Agent Type", fontsize=12)
+    ax.set_xlabel("Agent (executor split by tier)", fontsize=12)
     ax.set_ylabel("Dataset", fontsize=12)
     ax.set_title(title or "Agent Call Distribution (Normalized per Dataset)",
                  fontsize=13, fontweight="bold")
@@ -101,7 +120,7 @@ def plot_single_heatmap(matrix: np.ndarray, output_path: str, title: str = ""):
 
 def plot_comparison_heatmap(matrices: list[np.ndarray], labels: list[str],
                             output_path: str):
-    """Plot side-by-side heatmaps for cheap vs matched pool comparison."""
+    """Plot side-by-side heatmaps for multi-condition comparison."""
     n = len(matrices)
     fig, axes = plt.subplots(1, n, figsize=(10 * n, 6))
     if n == 1:
@@ -122,10 +141,10 @@ def plot_comparison_heatmap(matrices: list[np.ndarray], labels: list[str],
             linecolor="white",
         )
         ax.set_title(label, fontsize=13, fontweight="bold")
-        ax.set_xlabel("Agent Type", fontsize=11)
+        ax.set_xlabel("Agent (executor split by tier)", fontsize=11)
         ax.set_ylabel("Dataset", fontsize=11)
 
-    plt.suptitle("Agent Call Distribution: Cheap vs Matched Pool",
+    plt.suptitle("Agent Call Distribution Comparison",
                  fontsize=14, fontweight="bold", y=1.02)
     plt.tight_layout()
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
@@ -143,39 +162,39 @@ def print_summary(matrix: np.ndarray, label: str = ""):
 
     print(f"\n{'Source':<15}", end="")
     for a in AGENT_LABELS:
-        print(f"{a:>12}", end="")
+        print(f"{a:>14}", end="")
     print()
-    print("-" * (15 + 12 * len(AGENTS)))
+    print("-" * (15 + 14 * len(AGENT_COLUMNS)))
 
     for i, src in enumerate(SOURCE_LABELS):
         print(f"{src:<15}", end="")
-        for j in range(len(AGENTS)):
-            print(f"{matrix[i][j]:>12.3f}", end="")
+        for j in range(len(AGENT_COLUMNS)):
+            print(f"{matrix[i][j]:>14.3f}", end="")
         print()
 
     # Highlight emergent patterns
     print("\nEmergent patterns:")
-    simple_idx = [0, 1, 2]  # NQ, TriviaQA, PopQA
-    multihop_idx = [3, 4, 5]  # HotpotQA, 2Wiki, MuSiQue
-    code_idx = [6, 7]  # HumanEval, MBPP
+    simple_idx = [0, 1, 2]
+    multihop_idx = [3, 4, 5]
+    code_idx = [6, 7]
 
-    exec_cheap_col = AGENTS.index("executor_cheap")
-    decomposer_col = AGENTS.index("decomposer")
-    synthesizer_col = AGENTS.index("synthesizer")
-    exec_strong_col = AGENTS.index("executor_strong")
-    critic_col = AGENTS.index("critic")
+    exec_weak_col   = AGENT_LABELS.index("Exec-Weak")
+    exec_strong_col = AGENT_LABELS.index("Exec-Strong")
+    decomposer_col  = AGENT_LABELS.index("Decomposer")
+    synthesizer_col = AGENT_LABELS.index("Synthesizer")
+    critic_col      = AGENT_LABELS.index("Critic")
 
-    simple_exec = np.mean(matrix[simple_idx, exec_cheap_col])
+    simple_weak     = np.mean(matrix[simple_idx, exec_weak_col])
     multihop_decomp = np.mean(matrix[multihop_idx, decomposer_col])
-    multihop_synth = np.mean(matrix[multihop_idx, synthesizer_col])
-    code_strong = np.mean(matrix[code_idx, exec_strong_col])
-    code_critic = np.mean(matrix[code_idx, critic_col])
+    multihop_synth  = np.mean(matrix[multihop_idx, synthesizer_col])
+    code_strong     = np.mean(matrix[code_idx, exec_strong_col])
+    code_critic     = np.mean(matrix[code_idx, critic_col])
 
-    print(f"  Simple QA -> exec_cheap:  {simple_exec:.3f}")
-    print(f"  Multi-hop -> decomposer:  {multihop_decomp:.3f}")
-    print(f"  Multi-hop -> synthesizer: {multihop_synth:.3f}")
-    print(f"  Code -> exec_strong:      {code_strong:.3f}")
-    print(f"  Code -> critic:           {code_critic:.3f}")
+    print(f"  Simple QA -> exec(weak):    {simple_weak:.3f}")
+    print(f"  Multi-hop -> decomposer:    {multihop_decomp:.3f}")
+    print(f"  Multi-hop -> synthesizer:   {multihop_synth:.3f}")
+    print(f"  Code -> exec(strong):       {code_strong:.3f}")
+    print(f"  Code -> critic:             {code_critic:.3f}")
 
 
 def main():

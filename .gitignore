@@ -9,6 +9,7 @@ checkpoints/
 # data/*.jsonl
 data/*.parquet
 data/test_livecode.jsonl
+data/sft_warmup_old_6role.jsonl  # legacy 6-role backup, kept locally only
 
 # Evaluation results
 eval/results/

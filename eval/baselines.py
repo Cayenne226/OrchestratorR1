@@ -2,8 +2,9 @@
 Evaluate baseline methods on the same test data for fair comparison.
 
 Baselines:
-  1. Direct-Strong: Send query directly to GPT-4o (no orchestration)
-  2. Fixed-Pipeline: Always run full pipeline (refiner→decomposer→executor→critic→synthesizer)
+  1. Direct-Strong: Send query directly to executor (tier=strong), no orchestration
+  2. Direct-Weak:   Send query directly to executor (tier=weak), no orchestration
+  3. Fixed-Pipeline: Always run full 4-step pipeline (decomposer -> executor -> critic -> synthesizer)
 
 Router-R1 and ReAct baselines should be evaluated using their own codebases.
 
@@ -46,71 +47,69 @@ def _is_code_task(record: dict) -> bool:
 
 
 def eval_direct_strong(record: dict, registry: AgentRegistry) -> dict:
-    """Baseline: Send query directly to strong model, no orchestration."""
+    """Baseline: Send query directly to strong-tier executor, no orchestration."""
     question = record["input"]
     suffix = "" if _is_code_task(record) else SHORT_ANSWER_SUFFIX
-    response, cost = registry.dispatch("executor_strong", question + suffix)
+    response, cost = registry.dispatch("executor", question + suffix, tier="strong")
 
     return {
         "pred": response.strip(),
         "n_turns": 1,
         "total_cost": cost,
-        "agent_calls": [{"agent_type": "executor_strong", "cost": cost}],
+        "agent_calls": [{"agent_type": "executor", "tier": "strong", "cost": cost}],
     }
 
 
-def eval_direct_cheap(record: dict, registry: AgentRegistry) -> dict:
-    """Baseline: Send query directly to cheap model, no orchestration."""
+def eval_direct_weak(record: dict, registry: AgentRegistry) -> dict:
+    """Baseline: Send query directly to weak-tier executor, no orchestration."""
     question = record["input"]
     suffix = "" if _is_code_task(record) else SHORT_ANSWER_SUFFIX
-    response, cost = registry.dispatch("executor_cheap", question + suffix)
+    response, cost = registry.dispatch("executor", question + suffix, tier="weak")
 
     return {
         "pred": response.strip(),
         "n_turns": 1,
         "total_cost": cost,
-        "agent_calls": [{"agent_type": "executor_cheap", "cost": cost}],
+        "agent_calls": [{"agent_type": "executor", "tier": "weak", "cost": cost}],
     }
 
 
 def eval_fixed_pipeline(record: dict, registry: AgentRegistry) -> dict:
-    """Baseline: Always run the full 6-step pipeline regardless of task complexity."""
+    """Baseline: Always run the full 4-step pipeline regardless of task complexity.
+
+    Pipeline: decomposer -> executor(strong) -> critic -> [executor retry] -> synthesizer
+    """
     question = record["input"]
     is_code = _is_code_task(record)
     suffix = "" if is_code else SHORT_ANSWER_SUFFIX
     agent_calls = []
     total_cost = 0.0
 
-    # Step 1: Refiner
-    refined, cost = registry.dispatch("refiner", question)
-    agent_calls.append({"agent_type": "refiner", "cost": cost})
-    total_cost += cost
-
-    # Step 2: Decomposer
-    plan, cost = registry.dispatch("decomposer", refined)
+    # Step 1: Decomposer
+    plan, cost = registry.dispatch("decomposer", question)
     agent_calls.append({"agent_type": "decomposer", "cost": cost})
     total_cost += cost
 
-    # Step 3: Executor (strong, on the refined+decomposed task)
+    # Step 2: Executor (strong, on the decomposed task)
     exec_query = f"Based on this plan: {plan}\n\nAnswer the original question: {question}{suffix}"
-    result, cost = registry.dispatch("executor_strong", exec_query)
-    agent_calls.append({"agent_type": "executor_strong", "cost": cost})
+    result, cost = registry.dispatch("executor", exec_query, tier="strong")
+    agent_calls.append({"agent_type": "executor", "tier": "strong", "cost": cost})
     total_cost += cost
 
-    # Step 4: Critic
+    # Step 3: Critic
     critic_query = f"Question: {question}\nAnswer: {result}\n\nIs this answer correct and complete?"
     feedback, cost = registry.dispatch("critic", critic_query)
     agent_calls.append({"agent_type": "critic", "cost": cost})
     total_cost += cost
 
-    # Step 5: Executor again if critic found issues
+    # Step 4: Executor retry if critic found issues
     if any(w in feedback.lower() for w in ["incorrect", "incomplete", "missing", "wrong"]):
         retry_query = f"Original question: {question}\nPrevious answer: {result}\nFeedback: {feedback}\nPlease provide a corrected answer.{suffix}"
-        result, cost = registry.dispatch("executor_strong", retry_query)
-        agent_calls.append({"agent_type": "executor_strong", "cost": cost})
+        result, cost = registry.dispatch("executor", retry_query, tier="strong")
+        agent_calls.append({"agent_type": "executor", "tier": "strong", "cost": cost})
         total_cost += cost
 
-    # Step 6: Synthesizer
+    # Step 5: Synthesizer
     if is_code:
         synth_query = f"Question: {question}\nCode: {result}\n\nCombine into a clean, final solution. Output only the code, nothing else."
     else:
@@ -135,7 +134,8 @@ def eval_fixed_pipeline(record: dict, registry: AgentRegistry) -> dict:
 
 METHODS = {
     "direct_strong": eval_direct_strong,
-    "direct_cheap": eval_direct_cheap,
+    "direct_weak":   eval_direct_weak,
+    "direct_cheap":  eval_direct_weak,   # backward-compat alias
     "fixed_pipeline": eval_fixed_pipeline,
 }
 

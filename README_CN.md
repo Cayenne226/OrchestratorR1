@@ -1,6 +1,6 @@
 # OrchestratorR1：基于强化学习的反应式多智能体编排
 
-> **一句话概括**：训练一个小型 LLM（Qwen2.5-3B/7B），通过 GRPO 强化学习使其成为"元控制器"——它反应式地编排 6 个专用外部 Agent，在每次 Agent 返回结果后观察响应再决定下一步动作，超越固定流水线和开环规划器。
+> **一句话概括**：训练一个小型 LLM（Qwen2.5-3B/7B），通过 GRPO 强化学习使其成为"元控制器"——它反应式地编排 4 个专用外部 Agent（executor 支持 strong/weak 双档位），在每次 Agent 返回结果后观察响应再决定下一步动作，超越固定流水线和开环规划器。
 
 ---
 
@@ -25,7 +25,7 @@
   - [7.3 训练中的奖励函数](#73-训练中的奖励函数)
 - [8. 数据流程](#8-数据流程)
 - [9. 评估系统](#9-评估系统)
-- [10. 双 Worker Pool 策略](#10-双-worker-pool-策略)
+- [10. Worker Pool 设计](#10-worker-pool-设计)
 - [11. 关键超参数](#11-关键超参数)
 - [12. 快速开始](#12-快速开始)
 
@@ -37,7 +37,7 @@
 
 现有多智能体系统主要分两类：
 
-1. **固定流水线** —— 无论任务复杂度如何，始终按相同顺序调用 Agent（例如：refiner -> decomposer -> executor -> critic -> synthesizer）。对简单任务造成浪费，对新型任务缺乏灵活性。
+1. **固定流水线** —— 无论任务复杂度如何，始终按相同顺序调用 Agent（例如：decomposer -> executor -> critic -> synthesizer）。对简单任务造成浪费，对新型任务缺乏灵活性。
 
 2. **开环规划器**（如 Conductor）—— 一个强大的 LLM 预先生成完整的执行计划，然后所有 Agent 并行执行。规划器永远看不到中间结果，无法自适应调整。
 
@@ -88,7 +88,7 @@
 ```
                           ┌──────────────────────────────┐
                           │    编排器 LLM                  │
-                          │   (Qwen2.5-3B, RL 训练)       │
+                          │   (Qwen2.5-3B, RL 训练)       │ 同时解决：通过该任务training 提升了qwen2.5性能
                           └──────┬───────────────────────┘
                                  │
                     生成 XML 标签: <think>, <call>, <answer>
@@ -109,11 +109,11 @@
                     │
     通过 OpenAI 兼容 API 调度到对应 Agent
                     │
-    ┌───────┬───────┼───────┬──────────┬────────────┐
-    │       │       │       │          │            │
- refiner  decomp  exec_   exec_    critic      synth
- 改写器   分解器   cheap   strong   评审器      合成器
-               廉价执行  强力执行
+    ┌───────┬───────┼───────────┬────────────┐
+    │       │       │           │            │
+ executor  executor  decomp    critic      synth
+ (strong)  (weak)    分解器    评审器      合成器
+ 强力执行   廉价执行
 ```
 
 **训练循环** (GRPO)：
@@ -136,7 +136,7 @@ OrchestratorR1/
 ├── orchestrator_r1/              # 核心 Python 包
 │   ├── agent_pool/
 │   │   ├── base_agent.py         # OpenAI 兼容 API 封装（重试 + 成本追踪）
-│   │   └── agent_registry.py     # 6-Agent 调度表，双 Worker Pool
+│   │   └── agent_registry.py     # 4-Agent 调度表（executor 支持 strong/weak 双档位）
 │   ├── orchestrator/
 │   │   ├── parser.py             # XML 标签解析器 + 格式校验器
 │   │   ├── reward.py             # 复合奖励 R(τ) 计算
@@ -174,26 +174,29 @@ OrchestratorR1/
 
 ## 4. Agent 池设计
 
-编排器拥有 6 个专用 Agent，每个由不同的 LLM 通过 OpenAI 兼容 API 提供支持：
+编排器拥有 4 个功能专业化 Agent，每个由不同的 LLM 通过 OpenAI 兼容 API 提供支持。其中 **executor** 支持 strong/weak 双档位，由编排器在调用时通过 `tier` 属性选择：
 
-| Agent | 角色 | 使用时机 |
-|-------|------|----------|
-| **refiner**（改写器） | 改写查询以提升检索效果 | 问题含有隐式引用或多跳依赖时 |
-| **decomposer**（分解器） | 将复杂任务拆分为子任务 | 任务包含多个独立步骤时 |
-| **executor_cheap**（廉价执行器） | 快速、低成本的任务执行 | 简单事实查询、简单代码 |
-| **executor_strong**（强力执行器） | 高质量、高成本的执行 | 困难推理、复杂代码、深度分析 |
-| **critic**（评审器） | 质量验证 | 对结果质量不确定或要求严格时 |
-| **synthesizer**（合成器） | 合并多个部分结果 | 执行多个子任务之后 |
+| Agent | 角色 | 后端模型 | 使用时机 |
+|-------|------|---------|----------|
+| **executor (strong)** | 高质量、高成本的执行 | Claude Sonnet 4 | 困难推理、复杂代码、深度分析 |
+| **executor (weak)** | 快速、低成本的执行 | GPT-4o | 简单事实查询、明确子任务 |
+| **decomposer**（分解器） | 将复杂任务拆分为子任务 | Gemini 2.5 Pro | 任务包含多个独立步骤时 |
+| **critic**（评审器） | 质量验证 | Claude Sonnet 4 | 对结果质量不确定或要求严格时 |
+| **synthesizer**（合成器） | 合并多个部分结果 | GPT-4o | 执行多个子任务之后 |
 
-每个 Agent 都有专属的系统提示词来定义其行为（在 `agent_registry.py` 中定义），例如：
+> **设计说明**：早期版本曾包含独立的 `refiner`（查询改写）Agent，但实验表明编排器在 `<think>` 标签内的内部推理已能完成 query rewriting，独立 refiner 与 executor 输入存在功能重叠，因此被移除。每个 Agent 都有专属的系统提示词来定义其行为（在 `agent_registry.py` 中定义），例如：
 
 ```python
 AGENT_SYSTEM_PROMPTS = {
-    "refiner": (
-        "You are a search query optimization expert. Rewrite the given question or task "
-        "into a better-phrased query that will yield more accurate and relevant results. "
-        "Techniques: decompose implicit constraints, add context keywords, resolve pronouns "
-        "and references, rephrase for specificity. Output only the rewritten query, nothing else."
+    "executor": (
+        "You are an expert task executor. Complete the given task accurately. "
+        "For straightforward queries, be direct and concise. For complex queries, "
+        "provide thorough, well-structured output. Focus on correctness."
+    ),
+    "decomposer": (
+        "You are a task planning expert. Break down the given complex task into a numbered list "
+        "of independent, executable subtasks. Each subtask should be self-contained and actionable. "
+        "Output only the numbered list, nothing else."
     ),
     "critic": (
         "You are a strict quality reviewer. Evaluate the given result for correctness, "
@@ -205,7 +208,6 @@ AGENT_SYSTEM_PROMPTS = {
         "complete, and well-structured final answer. Eliminate redundancy and ensure consistency. "
         "Output only the final combined result."
     ),
-    # ... (decomposer, executor_cheap, executor_strong 类似定义)
 }
 ```
 
@@ -233,13 +235,13 @@ AGENT_SYSTEM_PROMPTS = {
 子任务 2：这个条约是什么时候签署的？
 子任务 3：当时美国总统是谁？</information>
 
-<think>分解器把问题拆成了 3 部分。我用廉价执行器来处理这个事实链。</think>
+<think>分解器把问题拆成了 3 部分。我用 executor (weak) 来处理这个事实链。</think>
 
-<call type="executor_cheap">一战结束的条约是什么？什么时候签署的？</call>
+<call type="executor" tier="weak">一战结束的条约是什么？什么时候签署的？</call>
 
 <information>《凡尔赛条约》于 1919 年 6 月 28 日签署。</information>
 
-<call type="executor_cheap">1919 年 6 月的美国总统是谁？</call>
+<call type="executor" tier="weak">1919 年 6 月的美国总统是谁？</call>
 
 <information>1919 年 6 月的美国总统是伍德罗·威尔逊。</information>
 
@@ -258,8 +260,9 @@ AGENT_SYSTEM_PROMPTS = {
 
 ```python
 VALID_AGENT_TYPES = {
-    "refiner", "decomposer", "executor_cheap", "executor_strong", "critic", "synthesizer"
+    "executor", "decomposer", "critic", "synthesizer"
 }
+VALID_EXECUTOR_TIERS = {"strong", "weak"}
 
 STOP_TOKENS = ["</call>", "</answer>"]
 
@@ -427,7 +430,7 @@ def rollout(self, user_input: str) -> RolloutResult:
 **这个设计为什么重要：**
 
 - 执行 `context += f"\n<information>{response}</information>\n"` 之后，模型的下一次 `_generate_step()` 调用会在上下文窗口中看到 Agent 的响应
-- 这使得模型能够**反应式地**应对意外结果：如果答案看起来有误就调用 critic，如果查询需要改写就调用 refiner，如果结果令人满意就直接输出 `<answer>`
+- 这使得模型能够**反应式地**应对意外结果：如果答案看起来有误就调用 critic，如果任务复杂就调用 decomposer 拆解，如果结果令人满意就直接输出 `<answer>`
 - `continue` 语句意味着循环回到顶部，生成可以包含另一个 `<call>` 或 `<answer>` 的新段落
 - 模型通过 RL 学习哪些反应模式能带来更高的奖励
 
@@ -631,33 +634,23 @@ def compute_f1(pred: str, gold: Union[str, list]) -> float:
 
 ### 6.5 Agent 注册与调度 (`agent_registry.py`)
 
-注册表将 Agent 类型名映射到具体的 API 模型。它支持**两个 Worker Pool** 以实现双重评估策略。
+注册表将 Agent 类型名映射到具体的 API 模型。**executor 支持 strong/weak 双档位**，由编排器在 `<call>` 标签的 `tier` 属性中指定，从而在同一类型下统一调度高/低成本模型。
 
-**廉价池**（训练 + 成本高效评估时使用）：
+**主 Worker Pool**（训练 + 评估时使用，与 Conductor 共有 Worker 做控制变量对比）：
 
 ```python
 AGENT_MODEL_CONFIG = {
-    "refiner":         ("gpt-4o-mini",       0.15),   # 每 1M token 的成本（美元）
-    "decomposer":      ("gpt-4o",            2.50),
-    "executor_cheap":  ("gpt-4o-mini",       0.15),
-    "executor_strong": ("claude-sonnet-4-6", 3.00),
-    "critic":          ("gemini-2.5-flash",  0.15),
-    "synthesizer":     ("gpt-4o-mini",       0.15),
+    "executor": {
+        "strong": ("claude-sonnet-4",  3.00),   # 每 1M token 的成本（美元）
+        "weak":   ("gpt-4o",           2.50),
+    },
+    "decomposer":  ("gemini-2.5-pro",  1.25),
+    "critic":      ("claude-sonnet-4", 3.00),
+    "synthesizer": ("gpt-4o",          2.50),
 }
 ```
 
-**匹配池**（前沿模型，与 Conductor 公平对比）：
-
-```python
-AGENT_MODEL_CONFIG_MATCHED = {
-    "refiner":         ("claude-sonnet-4",   3.00),
-    "decomposer":      ("gemini-2.5-pro",    1.25),
-    "executor_cheap":  ("qwen3-32b",         0.50),
-    "executor_strong": ("gpt-5",            10.00),
-    "critic":          ("deepseek-r1-32b",   0.50),
-    "synthesizer":     ("gemma3-27b",        0.30),
-}
-```
+> **附录配置**：另有一个廉价 Worker Pool（GPT-4o-mini / Gemini Flash 替换主 Pool）用于零样本迁移实验，验证编排策略不依赖具体的 Worker 模型。仅在附录展示，不作为主实验配置。
 
 **调度机制：**
 
@@ -749,9 +742,9 @@ class BaseAgent:
 
 提示词中的关键规则：
 1. 始终以 `<think>` 开始，分析任务复杂度
-2. 简单任务：直接使用 `executor_cheap` 或 `executor_strong`
+2. 简单任务：直接使用 `executor`（默认 `tier="weak"`）
 3. 复杂任务：考虑先使用 `decomposer`
-4. 使用 `refiner` 改写含有隐式引用的查询
+4. 困难推理 / 复杂代码 / 深度分析：使用 `executor tier="strong"`
 5. 仅在结果质量至关重要时使用 `critic`
 6. 需要合并多个执行器结果时使用 `synthesizer`
 7. 每次响应都以 `<answer>...</answer>` 结尾
@@ -775,14 +768,13 @@ GPT-4o 使用 8 种精心设计的路径模式生成编排 trace：
 
 | 模式 | 数量 | Agent 路径 |
 |------|------|------------|
-| `simple_direct` | 40 | think -> executor_cheap -> answer |
-| `refine_then_exec` | 25 | think -> refiner -> executor_cheap -> answer |
-| `strong_direct` | 20 | think -> executor_strong -> answer |
-| `decompose_exec_synth` | 35 | think -> decomposer -> executor_cheap x2-3 -> synthesizer -> answer |
-| `decompose_strong_critic` | 30 | think -> decomposer -> executor_strong -> critic -> answer |
-| `full_pipeline` | 20 | think -> decomposer -> executor_strong -> critic -> executor_strong -> answer |
-| `code_simple` | 15 | think -> executor_cheap -> answer（代码任务） |
-| `code_complex` | 15 | think -> decomposer -> executor_strong -> critic -> answer（代码任务） |
+| `simple_direct` | 40 | think -> executor (weak) -> answer |
+| `strong_direct` | 25 | think -> executor (strong) -> answer |
+| `decompose_exec_synth` | 35 | think -> decomposer -> executor (weak) x2-3 -> synthesizer -> answer |
+| `decompose_strong_critic` | 30 | think -> decomposer -> executor (strong) -> critic -> answer |
+| `full_pipeline` | 20 | think -> decomposer -> executor (strong) -> critic -> executor (strong) -> answer |
+| `code_simple` | 15 | think -> executor (weak) -> answer（代码任务） |
+| `code_complex` | 15 | think -> decomposer -> executor (strong) -> critic -> answer（代码任务） |
 
 每条生成的 trace 都会被校验：
 - 必须包含 `<think>`、至少一个 `<call>` 和 `<answer>` 标签
@@ -876,7 +868,7 @@ def build_reward_fn(registry, gen_manager_ref, args):
     return reward_fn
 ```
 
-**为什么训练时要用真实 API 调用**：成本信号必须是真实的。如果我们模拟成本，模型会学会利用模拟的漏洞，而不是学会真正地最小化 API 开支。模型必须体验真实的权衡：调用 `executor_strong`（Claude Sonnet, $3.00/1M）能得到更好的答案，但会招致比 `executor_cheap`（GPT-4o-mini, $0.15/1M）更重的成本惩罚。
+**为什么训练时要用真实 API 调用**：成本信号必须是真实的。如果我们模拟成本，模型会学会利用模拟的漏洞，而不是学会真正地最小化 API 开支。模型必须体验真实的权衡：调用 `executor` 的 `strong` 档位（Claude Sonnet 4, $3.00/1M）能得到更好的答案，但会招致比 `weak` 档位（GPT-4o, $2.50/1M）更重的成本惩罚。
 
 ---
 
@@ -960,31 +952,35 @@ def compute_metric(pred: str, record: dict) -> dict:
 
 | 基线 | 描述 | Agent 调用次数 |
 |------|------|---------------|
-| **Direct-Strong** | 直接发送查询到 executor_strong（如 Claude Sonnet） | 1 |
-| **Direct-Cheap** | 直接发送查询到 executor_cheap（如 GPT-4o-mini） | 1 |
-| **Fixed-Pipeline** | 无论复杂度如何，始终运行完整 6 步流水线 | 5-6 |
+| **Direct-Strong** | 直接发送查询到 executor (strong)，即 Claude Sonnet 4 | 1 |
+| **Direct-Weak** | 直接发送查询到 executor (weak)，即 GPT-4o | 1 |
+| **Fixed-Pipeline** | 无论复杂度如何，始终运行完整 4 步流水线 | 4-5 |
 | **Self-Reflection** | 同一模型（GPT-4o）5 轮自我纠正 | 5 |
 | **Open-Loop** | OrchestratorR1 模型但采用先规划再执行模式（无反应式反馈） | 不定 |
 
-固定流水线始终运行：refiner -> decomposer -> executor_strong -> critic -> （如果 critic 发现问题则重试）-> synthesizer。该基线用于测试静态的"什么都做"方案能否匹配学习到的自适应编排。
+固定流水线始终运行：decomposer -> executor (strong) -> critic -> （如果 critic 发现问题则重试）-> synthesizer。该基线用于测试静态的"什么都做"方案能否匹配学习到的自适应编排。
 
 ---
 
-## 10. 双 Worker Pool 策略
+## 10. Worker Pool 设计
 
-为了应对与 Conductor 的对比（Conductor 使用 GPT-5 等前沿级 Worker 模型）：
+我们采用**单一强 Worker Pool** 作为主实验配置，与 Conductor 在共有基准（GPQA、LiveCodeBench）上做控制变量对比——**相同 Worker，不同编排范式**（反应式 vs 开环），从而将编排范式的效果与 Worker 能力隔离。
 
-**廉价池**（训练 + 成本效率实验）：
-- 使用 GPT-4o-mini, GPT-4o, Claude Sonnet 4, Gemini Flash
-- 证明小型 RL 训练的编排器即使使用廉价 Worker 也能取得强劲结果
-- 每次查询总成本：通常 < $0.001
+**主 Worker Pool**（训练 + 评估）：
 
-**匹配池**（公平对比）：
-- 使用 GPT-5, Claude Sonnet 4, Gemini 2.5 Pro, DeepSeek-R1-32B, Qwen3-32B, Gemma3-27B
-- 匹配 Conductor 的 Worker 质量，以隔离**反应式 vs. 开环**这一变量
-- 核心论点：当 Worker 质量相同时，反应式编排 >= 开环规划
+| Agent | 后端模型 | 价格 ($/1M tokens) |
+|-------|---------|---------------------|
+| executor (strong) | Claude Sonnet 4 | 3.00 |
+| executor (weak) | GPT-4o | 2.50 |
+| decomposer | Gemini 2.5 Pro | 1.25 |
+| critic | Claude Sonnet 4 | 3.00 |
+| synthesizer | GPT-4o | 2.50 |
 
-**关键发现（预期）**：编排策略能零样本迁移到不同的 Worker Pool。用廉价 Worker 训练的模型学到的 Agent 选择策略同样适用于前沿 Worker，因为这些策略关注的是**何时**分解、**何时**评审等——而非任何特定 Worker 模型的具体能力。
+**核心论点**：当 Worker 能力相同时，反应式编排 ≥ 开环规划——优势来自闭环错误恢复、自适应重路由和提前终止，而非 Worker 本身。
+
+**成本控制**：成本系数 α 通过调节调用频率（特别是抑制不必要的 strong-tier 调用和重复 critic 验证）来控制总开销。reward 中的 `min(α·C_cost, 0.3)` 上限避免成本项主导梯度。
+
+**附录配置**（廉价 Worker Pool）：作为零样本迁移实验放在附录，用 GPT-4o-mini / Gemini Flash 替换主 Pool，验证编排策略不依赖于具体的 Worker 模型。
 
 ---
 

@@ -183,7 +183,8 @@ def eval_react_single(
     backbone,
     registry: AgentRegistry,
     max_turns: int = 6,
-    search_agent_type: str = "executor_cheap",
+    search_agent_type: str = "executor",
+    search_agent_tier: str = "weak",
 ) -> dict:
     """Run ReAct on a single question. Returns result dict."""
     is_code = record.get("source", "") in ("humaneval", "mbpp", "livecodebench") \
@@ -220,10 +221,11 @@ def eval_react_single(
 
         elif action_type == "search":
             # Call search tool via AgentRegistry
-            response, cost = registry.dispatch(search_agent_type, content)
+            response, cost = registry.dispatch(search_agent_type, content, tier=search_agent_tier)
             total_cost += cost
             agent_calls.append({
                 "agent_type": search_agent_type,
+                "tier": search_agent_tier,
                 "query": content,
                 "cost": cost,
             })
@@ -270,8 +272,9 @@ def parse_args():
 
     # ReAct config
     parser.add_argument("--max_turns", type=int, default=6)
-    parser.add_argument("--worker_pool", type=str, default="cheap",
-                        choices=["cheap", "matched"])
+    parser.add_argument("--search_tier", type=str, default="weak",
+                        choices=["weak", "strong"],
+                        help="Executor tier used as ReAct's search tool")
 
     # Search tool API (for the search() tool that calls an external LLM)
     parser.add_argument("--api_base", type=str, required=True,
@@ -319,9 +322,8 @@ def main():
     registry = AgentRegistry(
         api_base=args.api_base,
         api_key=args.api_key,
-        worker_pool=args.worker_pool,
     )
-    print(f"Search tool: {args.worker_pool} pool")
+    print(f"Search tool: executor (tier={args.search_tier})")
 
     # Load test data
     records = []
@@ -344,6 +346,7 @@ def main():
             backbone=backbone,
             registry=registry,
             max_turns=args.max_turns,
+            search_agent_tier=args.search_tier,
         )
         pred = output["pred"]
         metrics = compute_metric(pred, record)
@@ -373,7 +376,7 @@ def main():
     summary = {
         "method": "react_7b",
         "n_samples": n,
-        "worker_pool": args.worker_pool,
+        "search_tier": args.search_tier,
         "em": total_em / n if n > 0 else 0,
         "f1": total_f1 / n if n > 0 else 0,
         "avg_cost_usd": total_cost / n if n > 0 else 0,
